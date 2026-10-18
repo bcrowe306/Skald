@@ -589,6 +589,25 @@ ordinary `image()` widget can't be interleaved with `draw_*` calls
 because it lives in the view tree, not the immediate-mode canvas
 pass. Same `Image_Fit` semantics as the widget.
 
+#### draw_image_region
+
+```odin
+draw_image_region(r: ^Renderer, name: string, rect: Rect, src: Rect,
+                  tint = {1, 1, 1, 1}) -> bool
+```
+
+Paints part of a registered image — `src`, in the image's own pixels
+(origin top-left) — stretched into `rect`. For sprite sheets, texture
+atlases and per-cell thumbnails: upload the sheet once, draw any cell of
+it. The sampled rect is inset half a texel per side so linear filtering
+doesn't bleed the neighbouring cell in; `src` is clamped to the image.
+
+```odin
+// Cell 5 of a 4-column sheet of 32x32 cells, as a 64x64 thumbnail
+cell := skald.Rect{f32(5 % 4) * 32, f32(5 / 4) * 32, 32, 32}
+skald.draw_image_region(p.r, "hero-sheet", {p.bounds.x, p.bounds.y, 64, 64}, cell)
+```
+
 ### canvas
 
 ```odin

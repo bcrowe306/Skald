@@ -6,6 +6,24 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Added
+
+- **`draw_image_region`** paints part of a registered image (a pixel rect of it)
+  into a rect, for sprite sheets, atlases and per-cell thumbnails inside a
+  `canvas` — upload a sheet once, draw any cell. The sample rect is inset half a
+  texel so linear filtering doesn't bleed neighbouring cells in.
+
+### Fixed
+
+- **`select`'s popover could open somewhere other than where it reported it.**
+  Its predicted row height (used for outside-click dismiss, the hover-bleed rect
+  other widgets test against, and the above/below flip) was 6 px taller per row
+  than the option buttons it draws. Near the bottom of the window the prediction
+  flipped above the trigger while the list rendered below, so clicking a choice
+  counted as a click outside: the list closed without choosing, and a widget under
+  it could take the click. The prediction now measures the row like the button
+  does (line height + padding).
+
 ## 1.0.0-rc16 — 2026-10-02
 
 ### Fixed

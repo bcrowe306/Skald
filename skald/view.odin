@@ -6617,7 +6617,18 @@ _select_impl :: proc(
 	// only row separator needed); the overlay sits 4 px under the
 	// trigger. Add a 1-px hairline border layer + 4 px inner pad so
 	// the menu reads as a raised card, not a color-matched panel.
-	opt_h        := th.font.size_md + 2 * th.spacing.sm + 6
+	// The rows are buttons, so they're as tall as a button: the font's line height
+	// plus its padding. The popover's predicted rect (outside-click dismiss, the
+	// hover-bleed rect other widgets test against, the above/below flip) must match
+	// the list as drawn: a taller guess flipped the prediction above the trigger
+	// near the window's bottom while the list rendered below, so a click on a
+	// choice counted as outside — the list closed without choosing, and a widget
+	// under it took the click.
+	opt_h := th.font.size_md + 2 * th.spacing.sm + 6
+	if ctx.renderer != nil {
+		_, line_h := measure_text(ctx.renderer, "Ag", th.font.size_md)
+		opt_h = line_h + 2 * th.spacing.sm
+	}
 	option_gap   := f32(0)
 	overlay_pad  := f32(4)
 	BORDER_W     := f32(1)

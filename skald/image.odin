@@ -627,6 +627,41 @@ draw_image :: proc(
 	return true
 }
 
+// draw_image_region paints part of a registered image — `src`, in the image's
+// pixels (origin top-left) — stretched into `rect` (logical pixels). For sprite
+// sheets, atlases and thumbnails of one cell, without uploading every piece as its
+// own image. The sample rect is inset half a texel on each side so linear
+// filtering doesn't pull in the neighbouring cell's edge. `src` is clamped to the
+// image. Returns false if `name` isn't registered.
+draw_image_region :: proc(
+	r:    ^Renderer,
+	name: string,
+	rect: Rect,
+	src:  Rect,
+	tint: Color = {1, 1, 1, 1},
+) -> bool {
+	if r == nil { return false }
+	entry := image_cache_get(r, name)
+	if entry == nil { return false }
+	batch_push_image(r, entry.dset, rect, image_region_uv(f32(entry.width), f32(entry.height), src), tint)
+	return true
+}
+
+// image_region_uv turns a pixel rect of a `w` x `h` image into `{u0, v0, u1, v1}`
+// for batch_push_image: clamped to the image, inset half a texel per side (none
+// on an axis narrower than a texel, which samples its center).
+@(private)
+image_region_uv :: proc(w, h: f32, src: Rect) -> [4]f32 {
+	if w <= 0 || h <= 0 { return {0, 0, 1, 1} }
+	x0 := clamp(src.x, 0, w)
+	y0 := clamp(src.y, 0, h)
+	x1 := clamp(src.x + src.w, x0, w)
+	y1 := clamp(src.y + src.h, y0, h)
+	if x1 - x0 > 1 { x0 += 0.5; x1 -= 0.5 } else { x0 = (x0 + x1) * 0.5; x1 = x0 }
+	if y1 - y0 > 1 { y0 += 0.5; y1 -= 0.5 } else { y0 = (y0 + y1) * 0.5; y1 = y0 }
+	return {x0 / w, y0 / h, x1 / w, y1 / h}
+}
+
 // image_unload drops a registered image, releasing its GPU resources.
 // Safe to call with a name that was never registered (no-op). Used to
 // reclaim memory when the producer of a registered image (a closed CAD

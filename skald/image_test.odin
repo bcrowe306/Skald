@@ -84,3 +84,20 @@ image_placeholder_respects_radius :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, found, "placeholder rect must carry the image radius")
 }
+
+// draw_image_region's sample rect: pixels to UVs, clamped, inset half a texel
+@(test)
+image_region_uv_maps_pixels :: proc(t: ^testing.T) {
+	// The second 16x16 cell of a 64x32 sheet
+	uv := image_region_uv(64, 32, {16, 0, 16, 16})
+	testing.expect_value(t, uv, [4]f32{16.5 / 64, 0.5 / 32, 31.5 / 64, 15.5 / 32})
+	// Past the edges: clamped to the image
+	uv = image_region_uv(64, 32, {-10, 20, 100, 40})
+	testing.expect_value(t, uv, [4]f32{0.5 / 64, 20.5 / 32, 63.5 / 64, 31.5 / 32})
+	// One texel wide: its center
+	uv = image_region_uv(64, 32, {8, 0, 1, 32})
+	testing.expect_value(t, uv[0], f32(8.5 / 64))
+	testing.expect_value(t, uv[2], f32(8.5 / 64))
+	// No size: the whole image
+	testing.expect_value(t, image_region_uv(0, 0, {0, 0, 1, 1}), [4]f32{0, 0, 1, 1})
+}
