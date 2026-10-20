@@ -22,6 +22,10 @@ bug fixes bump the patch.
   frames sampling the image. A fullscreen editor viewport (1059 × 555) went from
   ~12 ms per update to ~0.6 ms. Images with mips keep the old path.
 
+- **`select` steps with Up / Down while closed:** a focused dropdown changes to
+  the previous or next option (stopping at the ends), as native dropdowns do;
+  Space / Enter still open it.
+
 ### Fixed
 
 - **`select`'s popover could open somewhere other than where it reported it.**

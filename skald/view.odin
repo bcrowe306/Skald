@@ -6676,6 +6676,16 @@ _select_impl :: proc(
 		keys := ctx.input.keys_pressed
 		if .Space in keys || .Enter in keys { st.open = !st.open }
 		if .Escape in keys                  { st.open = false   }
+		// Closed: Up / Down step to the previous / next option, as native dropdowns do (it
+		// stops at the ends; no current value starts from the first or last)
+		if !st.open && len(options) > 0 && (.Up in keys || .Down in keys) {
+			current := -1
+			for opt, i in options do if opt == value { current = i; break }
+			next := current
+			if .Down in keys { next = current < 0 ? 0 : min(current + 1, len(options) - 1) }
+			if .Up in keys   { next = current < 0 ? len(options) - 1 : max(current - 1, 0) }
+			if next != current && next >= 0 && next < len(option_msgs) { send(ctx, option_msgs[next]) }
+		}
 	}
 
 	// On the frame the menu opens, pre-scroll a long list so the current
