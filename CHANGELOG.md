@@ -12,6 +12,15 @@ bug fixes bump the patch.
   into a rect, for sprite sheets, atlases and per-cell thumbnails inside a
   `canvas` — upload a sheet once, draw any cell. The sample rect is inset half a
   texel so linear filtering doesn't bleed neighbouring cells in.
+- **Streaming images: `image_load_pixels(..., mipmaps = false)`** makes a
+  single-level image for content always drawn at native size or larger (a
+  software-rendered viewport, video). `image_update_pixels` on such an image
+  skips the CPU mip rebuild, copies into a staging buffer the image keeps mapped
+  (no allocation per update), and submits the copy with a fence instead of
+  waiting for the queue to go idle; the next update waits on that fence only.
+  Uploads share the frame queue, and the image barriers order them against
+  frames sampling the image. A fullscreen editor viewport (1059 × 555) went from
+  ~12 ms per update to ~0.6 ms. Images with mips keep the old path.
 
 ### Fixed
 

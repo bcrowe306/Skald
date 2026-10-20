@@ -104,10 +104,26 @@ Image_Entry :: struct {
 	// external = imported from a dmabuf (image_import_dmabuf): no mips, and
 	// image_update_pixels refuses it (the producer writes the memory directly).
 	external:  bool,
+	// stream = image_update_pixels' state for single-level images (made with
+	// `mipmaps = false`): a staging buffer kept mapped, and the last upload's
+	// command buffer + fence, so updates neither allocate nor wait for the queue.
+	stream:    Image_Stream,
 	// last_use is the value of Image_Cache.use_counter stamped each time
 	// this entry is fetched. Used by the LRU eviction pass to pick the
 	// least-recently-drawn image when the cache overflows.
 	last_use:  u64,
+}
+
+// Image_Stream is a streamed image's reusable upload state (see Image_Entry.stream).
+@(private)
+Image_Stream :: struct {
+	buf:     vk.Buffer,
+	mem:     vk.DeviceMemory,
+	ptr:     rawptr,
+	size:    vk.DeviceSize,
+	cb:      vk.CommandBuffer,
+	fence:   vk.Fence,
+	pending: bool,
 }
 
 // IMAGE_CACHE_MAX_ENTRIES caps the number of live GPU textures the
@@ -277,6 +293,7 @@ image_make_view_dset :: proc(
 @(private)
 image_entry_free :: proc(r: ^Renderer, e: ^Image_Entry) {
 	if e == nil { return }
+	image_stream_free(r, &e.stream)
 	if e.dset  != 0 { vk.FreeDescriptorSets(r.device, r.images.dset_pool, 1, &e.dset) }
 	if e.view  != 0 { vk.DestroyImageView(r.device, e.view, nil) }
 	if e.image != 0 { vk.DestroyImage(r.device, e.image, nil) }
@@ -298,7 +315,7 @@ image_cache_drop :: proc(r: ^Renderer, name: string) {
 }
 
 @(private)
-image_cache_insert :: proc(r: ^Renderer, key: string, w, h: u32, rgba: []u8) -> ^Image_Entry {
+image_cache_insert :: proc(r: ^Renderer, key: string, w, h: u32, rgba: []u8, mipmaps := true) -> ^Image_Entry {
 	if int(w) * int(h) * 4 != len(rgba) {
 		fmt.eprintfln("skald: image_cache_insert size mismatch (w=%d h=%d, %d bytes given)",
 			w, h, len(rgba))
@@ -310,7 +327,7 @@ image_cache_insert :: proc(r: ^Renderer, key: string, w, h: u32, rgba: []u8) -> 
 	// uses trilinear filtering (mipmapMode = Linear) so downscales stay
 	// sharp without shimmer.
 	mip_count: u32 = 1
-	{
+	if mipmaps {
 		s := max(w, h)
 		for s > 1 { s >>= 1; mip_count += 1 }
 	}
@@ -439,6 +456,11 @@ image_cache_insert :: proc(r: ^Renderer, key: string, w, h: u32, rgba: []u8) -> 
 // failure. The image draws via `image(ctx, name, ...)` and participates
 // in LRU eviction the same as file-loaded images.
 //
+// `mipmaps = false` makes a single-level image: for content always drawn at
+// its native size or larger (a software-rendered viewport, video), where mips
+// only cost time. `image_update_pixels` on such an image is the streaming fast
+// path: no CPU mip building, no allocations, no queue wait.
+//
 // **Not** intended for per-frame updates (paint apps, video playback,
 // CAD viewport panning). Replacement allocates a fresh `VkImage` +
 // `DeviceMemory` + descriptor set every call and waits the device idle
@@ -446,7 +468,7 @@ image_cache_insert :: proc(r: ^Renderer, key: string, w, h: u32, rgba: []u8) -> 
 // redrawing many quads. For per-frame refreshes at the same size, use
 // `image_update_pixels` after the initial `image_load_pixels` — it
 // reuses the existing GPU allocation and skips the device-wait.
-image_load_pixels :: proc(r: ^Renderer, name: string, w, h: u32, rgba: []u8) -> bool {
+image_load_pixels :: proc(r: ^Renderer, name: string, w, h: u32, rgba: []u8, mipmaps := true) -> bool {
 	if r == nil || r.device == nil { return false }
 	if w == 0 || h == 0            { return false }
 	if int(w) * int(h) * 4 != len(rgba) {
@@ -472,7 +494,7 @@ image_load_pixels :: proc(r: ^Renderer, name: string, w, h: u32, rgba: []u8) -> 
 	}
 
 	r.images.use_counter += 1
-	return image_cache_insert(r, name, w, h, rgba) != nil
+	return image_cache_insert(r, name, w, h, rgba, mipmaps) != nil
 }
 
 // image_is_resident reports whether `name` currently has a GPU texture in
@@ -520,6 +542,14 @@ image_release :: proc(r: ^Renderer, name: string) -> bool {
 // `rgba` is RGBA8 sRGB, w*h*4 bytes, copied synchronously into a
 // staging buffer.
 //
+// Single-level images (`image_load_pixels(..., mipmaps = false)`) take the
+// streaming path instead (image_stream_upload): the pixels go into a staging
+// buffer the entry keeps mapped, and the copy is submitted with a fence rather
+// than waited for. The next update waits on that fence only (normally long
+// signalled by then). Uploads go on the same queue as frames, so the copy
+// lands before the next frame samples the image; the barriers order it after
+// frames still reading the old pixels.
+//
 // Mip caveat: when the registered image was created with mips
 // (anything not 1×1), this proc regenerates **all** mip levels each
 // call by box-filtering on the CPU and uploading every level. That's
@@ -541,6 +571,12 @@ image_update_pixels :: proc(r: ^Renderer, name: string, w, h: u32, rgba: []u8) -
 	if !ok || entry == nil { return false }
 	if entry.external { return false } // dmabuf-imported: producer writes the memory
 	if entry.width != w || entry.height != h { return false }
+	if entry.mip_count == 1 {
+		if !image_stream_upload(r, entry, rgba) { return false }
+		r.images.use_counter += 1
+		entry.last_use = r.images.use_counter
+		return true
+	}
 
 	full_range := vk.ImageSubresourceRange{
 		aspectMask = {.COLOR}, baseMipLevel = 0, levelCount = entry.mip_count,
@@ -592,6 +628,88 @@ image_update_pixels :: proc(r: ^Renderer, name: string, w, h: u32, rgba: []u8) -
 	r.images.use_counter += 1
 	entry.last_use = r.images.use_counter
 	return true
+}
+
+// image_stream_upload copies `rgba` into a single-level image through the
+// entry's own staging buffer (made, and mapped, the first time) and submits the
+// copy with a fence, without waiting for it (see image_update_pixels).
+@(private)
+image_stream_upload :: proc(r: ^Renderer, entry: ^Image_Entry, rgba: []u8) -> bool {
+	st := &entry.stream
+	size := vk.DeviceSize(len(rgba))
+	// The previous upload must be done with the staging buffer and command buffer
+	if st.pending {
+		vk.WaitForFences(r.device, 1, &st.fence, true, max(u64))
+		vk.FreeCommandBuffers(r.device, r.device_cmd_pool, 1, &st.cb)
+		st.cb = nil
+		st.pending = false
+	}
+	if st.buf == 0 || st.size != size {
+		if st.buf != 0 {
+			vk.UnmapMemory(r.device, st.mem)
+			vk.DestroyBuffer(r.device, st.buf, nil)
+			vk.FreeMemory(r.device, st.mem, nil)
+		}
+		st.buf, st.mem = vk_make_buffer(r, size, {.TRANSFER_SRC}, {.HOST_VISIBLE, .HOST_COHERENT})
+		st.size = size
+		if res := vk.MapMemory(r.device, st.mem, 0, size, {}, &st.ptr); res != .SUCCESS {
+			fmt.eprintfln("skald: MapMemory (stream): %v", res)
+			return false
+		}
+	}
+	if st.fence == 0 {
+		fi := vk.FenceCreateInfo{sType = .FENCE_CREATE_INFO}
+		if res := vk.CreateFence(r.device, &fi, nil, &st.fence); res != .SUCCESS {
+			fmt.eprintfln("skald: CreateFence (stream): %v", res)
+			return false
+		}
+	}
+	vk_copy_bytes(st.ptr, raw_data(rgba), int(size))
+
+	range := vk.ImageSubresourceRange{aspectMask = {.COLOR}, levelCount = 1, layerCount = 1}
+	cb := vk_begin_one_shot(r)
+	vk_image_barrier(cb, entry.image, range,
+		{.SHADER_READ}, {.TRANSFER_WRITE},
+		.SHADER_READ_ONLY_OPTIMAL, .TRANSFER_DST_OPTIMAL,
+		{.FRAGMENT_SHADER}, {.TRANSFER})
+	region := vk.BufferImageCopy{
+		imageSubresource = {aspectMask = {.COLOR}, mipLevel = 0, layerCount = 1},
+		imageExtent = {entry.width, entry.height, 1},
+	}
+	vk.CmdCopyBufferToImage(cb, st.buf, entry.image, .TRANSFER_DST_OPTIMAL, 1, &region)
+	vk_image_barrier(cb, entry.image, range,
+		{.TRANSFER_WRITE}, {.SHADER_READ},
+		.TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL,
+		{.TRANSFER}, {.FRAGMENT_SHADER})
+	vk.EndCommandBuffer(cb)
+	vk.ResetFences(r.device, 1, &st.fence)
+	cb_mut := cb
+	si := vk.SubmitInfo{sType = .SUBMIT_INFO, commandBufferCount = 1, pCommandBuffers = &cb_mut}
+	if res := vk.QueueSubmit(r.queue, 1, &si, st.fence); res != .SUCCESS {
+		fmt.eprintfln("skald: QueueSubmit (stream): %v", res)
+		vk.FreeCommandBuffers(r.device, r.device_cmd_pool, 1, &cb_mut)
+		return false
+	}
+	st.cb = cb
+	st.pending = true
+	return true
+}
+
+// image_stream_free waits for a streamed image's last upload and releases its
+// staging buffer, command buffer and fence.
+@(private)
+image_stream_free :: proc(r: ^Renderer, st: ^Image_Stream) {
+	if st.pending {
+		vk.WaitForFences(r.device, 1, &st.fence, true, max(u64))
+		vk.FreeCommandBuffers(r.device, r.device_cmd_pool, 1, &st.cb)
+	}
+	if st.buf != 0 {
+		vk.UnmapMemory(r.device, st.mem)
+		vk.DestroyBuffer(r.device, st.buf, nil)
+		vk.FreeMemory(r.device, st.mem, nil)
+	}
+	if st.fence != 0 { vk.DestroyFence(r.device, st.fence, nil) }
+	st^ = {}
 }
 
 // draw_image paints an image cache entry into a canvas-style draw
