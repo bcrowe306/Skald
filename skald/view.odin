@@ -4401,7 +4401,8 @@ _text_input_impl :: proc(
 		}
 
 		keys := ctx.input.keys_pressed
-		ctrl := .Ctrl in ctx.input.modifiers
+		// The platform's command key too: Cmd+Z / Cmd+A / Cmd+C... on a Mac
+		ctrl := .Ctrl in ctx.input.modifiers || PRIMARY_MODIFIER in ctx.input.modifiers
 		shift := .Shift in ctx.input.modifiers
 
 		// Selection-replacing helper: if a selection exists, drop it from

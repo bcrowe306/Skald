@@ -64,6 +64,9 @@ bug fixes bump the patch.
 
 ### Fixed
 
+- **`text_input` takes Cmd on macOS** for undo, redo, select all, copy, cut
+  and paste (it only took Ctrl; the other text widgets took both).
+
 Found by running with the Khronos validation layers (synchronization checks on):
 
 - **A frame could overwrite the vertex and index buffers the previous frame was
