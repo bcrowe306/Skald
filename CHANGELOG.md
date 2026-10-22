@@ -8,6 +8,18 @@ bug fixes bump the patch.
 
 ### Added
 
+- **Drawing on Skald's GPU device: `renderer_vulkan_handles` and
+  `image_create_target`.** Another renderer (SDL's Vulkan renderer, given
+  Skald's instance, devices and queue) draws into an image Skald samples, with
+  no readback or upload, on every platform. The image is stored
+  `B8G8R8A8_UNORM` with `MUTABLE_FORMAT` and sampled as sRGB like other images,
+  is never LRU-evicted, and the producer's contract (layouts, barriers, the
+  queue on Skald's thread) is in its doc comment. Test:
+  `image_target_shows_what_sdl_draws`.
+- **`App.on_shutdown`**: runs after the loop, with the GPU idle, before the
+  renderer is destroyed, so apps can free what they made on Skald's device.
+- **`draw_image_region(..., inset = false)`** samples exactly the given rect (a
+  1:1 copy of part of a bigger image).
 - **`draw_image_region`** paints part of a registered image (a pixel rect of it)
   into a rect, for sprite sheets, atlases and per-cell thumbnails inside a
   `canvas` — upload a sheet once, draw any cell. The sample rect is inset half a

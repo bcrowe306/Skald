@@ -107,6 +107,13 @@ App :: struct($State, $Msg: typeid) {
 	// also blocks the idle `WaitEventTimeout` so the run loop spins.
 	always_redraw: bool,
 
+	// on_shutdown fires once when the run loop ends, after the GPU is idle and
+	// before Skald destroys its renderer (device, instance, windows). Release
+	// anything made on Skald's Vulkan device here (renderer_vulkan_handles): an
+	// SDL renderer sharing it, its textures over image_create_target images.
+	// Optional — leave nil to skip.
+	on_shutdown: proc(),
+
 	// on_window_focus_lost fires once when a window stops being the
 	// foreground window (user clicked another app, switched workspaces,
 	// Alt-Tabbed away). Fires for both primary and secondary windows,
@@ -567,6 +574,11 @@ run :: proc(app: App($State, $Msg)) {
 	r.lazy_present = !app.always_redraw
 	if !renderer_init(&r, &w) { return }
 	defer renderer_destroy(&r)
+	// Runs before renderer_destroy (defers run last-first)
+	defer if app.on_shutdown != nil {
+		vk.DeviceWaitIdle(r.device)
+		app.on_shutdown()
+	}
 
 	th    := app.theme
 	// Seed default English labels when the caller didn't supply any.

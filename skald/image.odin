@@ -101,9 +101,13 @@ Image_Entry :: struct {
 	width:     u32,
 	height:    u32,
 	mip_count: u32,
-	// external = imported from a dmabuf (image_import_dmabuf): no mips, and
-	// image_update_pixels refuses it (the producer writes the memory directly).
+	// external = imported from a dmabuf (image_import_dmabuf) or drawn by another
+	// renderer (image_create_target): no mips, and image_update_pixels refuses it
+	// (the producer writes the memory directly).
 	external:  bool,
+	// pinned = never evicted by the LRU pass (image_create_target: another renderer
+	// still draws into it); only image_release / image_unload drop it.
+	pinned:    bool,
 	// stream = image_update_pixels' state for single-level images (made with
 	// `mipmaps = false`): a staging buffer kept mapped, and the last upload's
 	// command buffer + fence, so updates neither allocate nor wait for the queue.
@@ -749,32 +753,36 @@ draw_image :: proc(
 // pixels (origin top-left) — stretched into `rect` (logical pixels). For sprite
 // sheets, atlases and thumbnails of one cell, without uploading every piece as its
 // own image. The sample rect is inset half a texel on each side so linear
-// filtering doesn't pull in the neighbouring cell's edge. `src` is clamped to the
-// image. Returns false if `name` isn't registered.
+// filtering doesn't pull in the neighbouring cell's edge; `inset = false` samples
+// exactly `src` instead (a 1:1 copy of part of a bigger image, such as the used
+// corner of a render target that only grows). `src` is clamped to the image.
+// Returns false if `name` isn't registered.
 draw_image_region :: proc(
-	r:    ^Renderer,
-	name: string,
-	rect: Rect,
-	src:  Rect,
-	tint: Color = {1, 1, 1, 1},
+	r:     ^Renderer,
+	name:  string,
+	rect:  Rect,
+	src:   Rect,
+	tint:  Color = {1, 1, 1, 1},
+	inset: bool  = true,
 ) -> bool {
 	if r == nil { return false }
 	entry := image_cache_get(r, name)
 	if entry == nil { return false }
-	batch_push_image(r, entry.dset, rect, image_region_uv(f32(entry.width), f32(entry.height), src), tint)
+	batch_push_image(r, entry.dset, rect, image_region_uv(f32(entry.width), f32(entry.height), src, inset), tint)
 	return true
 }
 
 // image_region_uv turns a pixel rect of a `w` x `h` image into `{u0, v0, u1, v1}`
 // for batch_push_image: clamped to the image, inset half a texel per side (none
-// on an axis narrower than a texel, which samples its center).
+// on an axis narrower than a texel, which samples its center) unless `inset` is false.
 @(private)
-image_region_uv :: proc(w, h: f32, src: Rect) -> [4]f32 {
+image_region_uv :: proc(w, h: f32, src: Rect, inset := true) -> [4]f32 {
 	if w <= 0 || h <= 0 { return {0, 0, 1, 1} }
 	x0 := clamp(src.x, 0, w)
 	y0 := clamp(src.y, 0, h)
 	x1 := clamp(src.x + src.w, x0, w)
 	y1 := clamp(src.y + src.h, y0, h)
+	if !inset { return {x0 / w, y0 / h, x1 / w, y1 / h} }
 	if x1 - x0 > 1 { x0 += 0.5; x1 -= 0.5 } else { x0 = (x0 + x1) * 0.5; x1 = x0 }
 	if y1 - y0 > 1 { y0 += 0.5; y1 -= 0.5 } else { y0 = (y0 + y1) * 0.5; y1 = y0 }
 	return {x0 / w, y0 / h, x1 / w, y1 / h}
@@ -814,7 +822,7 @@ image_cache_evict_lru :: proc(c: ^Image_Cache, r: ^Renderer) {
 	oldest_use: u64 = max(u64)
 	found := false
 	for key, entry in c.entries {
-		if entry == nil { continue }
+		if entry == nil || entry.pinned { continue }
 		if entry.last_use < oldest_use {
 			oldest_use = entry.last_use
 			oldest_key = key

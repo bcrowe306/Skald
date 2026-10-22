@@ -562,6 +562,70 @@ write is possible and fine for a small thumbnail. Returns `false`
 extensions or the format isn't importable — fall back to
 `image_load_pixels`. No-op off Linux.
 
+#### image_create_target and renderer_vulkan_handles
+
+```odin
+Vulkan_Handles :: struct { instance, physical_device, device, queue_family, queue }
+renderer_vulkan_handles(r: ^Renderer) -> Vulkan_Handles
+image_create_target(r: ^Renderer, name: string, width, height: u32) -> (vk.Image, bool)
+```
+
+Lets another renderer draw **on Skald's own GPU device** into an image
+Skald draws from — **zero-copy, every platform**: no readback, no
+upload. Built for embedding a 2D engine's scene view or any SDL-drawn
+surface (a code editor, a game) in a Skald app.
+
+`renderer_vulkan_handles` gives the instance, devices and queue; SDL's
+Vulkan renderer takes them through its `SDL_PROP_RENDERER_CREATE_VULKAN_*`
+properties (on a hidden window of its own, `{.HIDDEN, .VULKAN}`).
+`image_create_target` makes a single-level image registered under
+`name`, drawn like any other (`image(ctx, name, …)`, `draw_image`,
+`draw_image_region`). It's stored `B8G8R8A8_UNORM` with `MUTABLE_FORMAT`
+(SDL's `BGRA32` render targets view it as UNORM) and sampled through a
+`B8G8R8A8_SRGB` view like every Skald image; it starts transparent in
+`SHADER_READ_ONLY_OPTIMAL`. Hand the returned `VkImage` to SDL as a
+render target:
+
+```odin
+h := skald.renderer_vulkan_handles(ctx.renderer)
+props := sdl.CreateProperties()
+sdl.SetStringProperty(props, sdl.PROP_RENDERER_CREATE_NAME_STRING, "vulkan")
+sdl.SetPointerProperty(props, sdl.PROP_RENDERER_CREATE_WINDOW_POINTER, hiddenWindow)
+sdl.SetPointerProperty(props, sdl.PROP_RENDERER_CREATE_VULKAN_INSTANCE_POINTER, h.instance)
+sdl.SetPointerProperty(props, sdl.PROP_RENDERER_CREATE_VULKAN_PHYSICAL_DEVICE_POINTER, h.physical_device)
+sdl.SetPointerProperty(props, sdl.PROP_RENDERER_CREATE_VULKAN_DEVICE_POINTER, h.device)
+sdl.SetNumberProperty(props, sdl.PROP_RENDERER_CREATE_VULKAN_GRAPHICS_QUEUE_FAMILY_INDEX_NUMBER, i64(h.queue_family))
+sdl.SetNumberProperty(props, sdl.PROP_RENDERER_CREATE_VULKAN_PRESENT_QUEUE_FAMILY_INDEX_NUMBER, i64(h.queue_family))
+producer := sdl.CreateRendererWithProperties(props)
+
+image, _ := skald.image_create_target(ctx.renderer, "scene", 640, 360)
+tprops := sdl.CreateProperties()
+sdl.SetNumberProperty(tprops, sdl.PROP_TEXTURE_CREATE_FORMAT_NUMBER, i64(sdl.PixelFormat.BGRA32))
+sdl.SetNumberProperty(tprops, sdl.PROP_TEXTURE_CREATE_ACCESS_NUMBER, i64(sdl.TextureAccess.TARGET))
+sdl.SetNumberProperty(tprops, sdl.PROP_TEXTURE_CREATE_WIDTH_NUMBER, 640)
+sdl.SetNumberProperty(tprops, sdl.PROP_TEXTURE_CREATE_HEIGHT_NUMBER, 360)
+sdl.SetNumberProperty(tprops, sdl.PROP_TEXTURE_CREATE_VULKAN_TEXTURE_NUMBER, i64(uintptr(image)))
+sdl.SetNumberProperty(tprops, sdl.PROP_TEXTURE_CREATE_VULKAN_LAYOUT_NUMBER, i64(vk.ImageLayout.SHADER_READ_ONLY_OPTIMAL))
+target := sdl.CreateTextureWithProperties(producer, tprops)
+
+// Each time the picture changes (in view, update or a command):
+sdl.SetRenderTarget(producer, target)
+// ... draw ...
+sdl.SetRenderTarget(producer, nil)   // back to sampleable, submitted
+```
+
+**The producer's contract:** it submits to Skald's queue on the thread
+that runs Skald's frames, between frames; whenever Skald may draw, the
+image is in `SHADER_READ_ONLY_OPTIMAL` with its writes made visible to
+fragment-shader reads by a barrier submitted earlier; before writing it
+again it waits for earlier fragment-shader reads. SDL's Vulkan renderer
+does all of that when its target is set back to `nil` and made the
+target again. Target images are never LRU-evicted, and
+`image_update_pixels` refuses them. Destroy the producer's texture
+before `image_release`, and the producer itself in `App.on_shutdown`
+(before Skald destroys the device). The test
+`image_target_shows_what_sdl_draws` does the whole round trip.
+
 #### image_release
 
 ```odin
@@ -593,7 +657,7 @@ pass. Same `Image_Fit` semantics as the widget.
 
 ```odin
 draw_image_region(r: ^Renderer, name: string, rect: Rect, src: Rect,
-                  tint = {1, 1, 1, 1}) -> bool
+                  tint = {1, 1, 1, 1}, inset = true) -> bool
 ```
 
 Paints part of a registered image — `src`, in the image's own pixels
@@ -601,6 +665,9 @@ Paints part of a registered image — `src`, in the image's own pixels
 atlases and per-cell thumbnails: upload the sheet once, draw any cell of
 it. The sampled rect is inset half a texel per side so linear filtering
 doesn't bleed the neighbouring cell in; `src` is clamped to the image.
+`inset = false` samples exactly `src`: a 1:1 copy of part of a bigger
+image, such as the used corner of a render target that only grows
+(`image_create_target`).
 
 ```odin
 // Cell 5 of a 4-column sheet of 32x32 cells, as a 64x64 thumbnail
@@ -1823,6 +1890,18 @@ state changed. Default is `false` (lazy, battery-friendly). Flip to
 driven from app state — anything where you want a predictable
 per-frame loop instead of waiting for events. See the cookbook
 "Force a render every frame" recipe.
+
+### App.on_shutdown
+
+```odin
+// On App:
+on_shutdown: proc()
+```
+
+Called once when the run loop ends, with the GPU idle and before Skald
+destroys its renderer, device and windows. Release anything made on
+Skald's Vulkan device (`renderer_vulkan_handles`) here: an SDL renderer
+sharing it and the textures it made over `image_create_target` images.
 
 ### font_add_fallback
 
