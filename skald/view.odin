@@ -13585,6 +13585,14 @@ table_simple :: table
 // only reserved when at least one item in the active menu has
 // `checked = true`, so menus without any checks lay out identically
 // to before.
+//
+// `submenu` makes the row open a second menu beside the dropdown instead
+// of sending `msg`: the row shows ▸ where a shortcut would go, hovering
+// (or clicking) it opens the submenu, and choosing one of its items sends
+// that item's msg and closes everything. Submenus nest one level (a
+// submenu's own `submenu` fields are ignored); their items' shortcuts
+// are registered like the dropdown's. An empty submenu shows its row
+// disabled.
 Menu_Item :: struct($Msg: typeid) {
 	label:     string,
 	shortcut:  Shortcut,
@@ -13592,6 +13600,7 @@ Menu_Item :: struct($Msg: typeid) {
 	separator: bool,
 	disabled:  bool,
 	checked:   bool,
+	submenu:   []Menu_Item(Msg),
 }
 
 // Menu_Entry is one top-level menu on a menu_bar — the label that sits
@@ -13637,26 +13646,26 @@ menu_bar :: proc(
 
 	// Register accelerators up front so they fire even when the menu is
 	// closed. Disabled items stay off the registry — a greyed-out menu
-	// command's hotkey should feel inert too.
+	// command's hotkey should feel inert too. Submenu items count too.
 	for entry in entries {
 		for item in entry.items {
 			if item.separator || item.disabled { continue }
+			if item.submenu != nil {
+				for sub in item.submenu {
+					if sub.separator || sub.disabled { continue }
+					shortcut(ctx, sub.shortcut, sub.msg)
+				}
+				continue
+			}
 			shortcut(ctx, item.shortcut, item.msg)
 		}
 	}
 
-	fs            := th.font.size_md
-	fs_short      := th.font.size_sm
+	m := menu_metrics(ctx)
+	fs := th.font.size_md
 	TRIG_PAD_X    := th.spacing.md
 	TRIG_GAP      := th.spacing.xs
 	TRIG_H        := fs + 2*th.spacing.sm + 4
-	ROW_H         := fs + 2*th.spacing.sm + 4
-	SEP_H         := th.spacing.sm + 1
-	ROW_PAD_X     := th.spacing.md
-	SHORTCUT_GAP  := th.spacing.lg
-	DROPDOWN_PAD  := f32(4)
-	BORDER_W      := f32(1)
-	MIN_DROPDOWN_W := f32(160)
 
 	// Measure each trigger so we can hit-test this frame using last
 	// frame's bar origin. Widths are stable while labels are, which is
@@ -13677,9 +13686,12 @@ menu_bar :: proc(
 	}
 
 	// cursor_pos stores the 1-based open-entry index (0 = closed) so
-	// the zero-value state keeps the bar quiet on first frame.
+	// the zero-value state keeps the bar quiet on first frame;
+	// selection_anchor the 1-based open submenu's row in it (0 = none).
 	open_idx := st.cursor_pos - 1
 	if open_idx < -1 || open_idx >= len(entries) { open_idx = -1 }
+	prev_open := open_idx
+	sub_idx := st.selection_anchor - 1
 
 	// A modal dialog outranks any open menu. Force-close so a dropdown
 	// can't peek out from behind a modal's card; accelerators still fire
@@ -13707,87 +13719,99 @@ menu_bar :: proc(
 
 	if open_idx >= 0 && .Escape in ctx.input.keys_pressed { open_idx = -1 }
 
+	// Another menu (or none): no submenu
+	if open_idx != prev_open || open_idx < 0 { sub_idx = -1 }
+
 	// Compute dropdown geometry so outside-click dismiss + input-swallow
-	// have something to hit-test. Height sums per-item to keep separators
-	// compact, width picks the widest label + accelerator pair.
+	// have something to hit-test.
 	dropdown_rect: Rect
-	dropdown_w: f32
 	active_items: []Menu_Item(Msg)
-	check_col_w := f32(0)
+	drop: Menu_Size
 	if open_idx >= 0 {
 		active_items = entries[open_idx].items
-		max_label := f32(0)
-		max_short := f32(0)
-		has_checks := false
-		for item in active_items {
-			if item.separator { continue }
-			if item.checked { has_checks = true }
-			lw, _ := measure_text(ctx.renderer, item.label, fs)
-			if lw > max_label { max_label = lw }
-			if !shortcut_is_empty(item.shortcut) {
-				sw, _ := measure_text(ctx.renderer,
-					shortcut_format(item.shortcut), fs_short)
-				if sw > max_short { max_short = sw }
-			}
-		}
-		// Reserve a checkmark column only when this menu actually has a
-		// checked item right now — keeps unchecked menus visually identical
-		// to pre-1.2 builds. Width is the glyph + a spacing.sm gutter.
-		if has_checks {
-			cw, _ := measure_text(ctx.renderer, "✓", fs)
-			check_col_w = cw + th.spacing.sm
-		}
-		inner_w := check_col_w + max_label + max_short
-		if max_short > 0 { inner_w += SHORTCUT_GAP }
-		dropdown_w = inner_w + 2*(DROPDOWN_PAD + BORDER_W + ROW_PAD_X)
-		if dropdown_w < MIN_DROPDOWN_W { dropdown_w = MIN_DROPDOWN_W }
-
-		dropdown_h := f32(2*(DROPDOWN_PAD + BORDER_W))
-		for item in active_items {
-			if item.separator { dropdown_h += SEP_H } else { dropdown_h += ROW_H }
-		}
-
+		drop = menu_measure(ctx, m, active_items)
 		anchor := trig_rects[open_idx]
-		dropdown_rect = Rect{anchor.x, anchor.y + anchor.h, dropdown_w, dropdown_h}
+		dropdown_rect = Rect{anchor.x, anchor.y + anchor.h, drop.w, drop.h}
 
 		// Claim the dropdown as an overlay so widgets beneath it (rendered
 		// later in the tree, gated through `rect_hovered`) don't paint
 		// hover tints under the open menu — matches select / context_menu.
 		widget_stamp_overlay_rect(ctx.widgets, dropdown_rect)
 	}
+	if sub_idx >= len(active_items) || (sub_idx >= 0 && len(active_items[sub_idx].submenu) == 0) { sub_idx = -1 }
 
-	// Outside-click dismiss: a press anywhere not in the bar or dropdown.
+	// Hovering a row with a submenu opens it; hovering another command
+	// closes it (a separator or the gap keeps it, so the pointer can
+	// travel across to it). A press on the row opens it too.
+	item_hover := -1
+	if open_idx >= 0 && rect_contains_point(dropdown_rect, mouse) {
+		if i := menu_row_at(m, active_items, dropdown_rect, mouse); i >= 0 {
+			item := active_items[i]
+			if !item.separator && !item.disabled && len(item.submenu) > 0 {
+				sub_idx = i
+			} else if !item.separator {
+				sub_idx = -1
+			}
+		}
+	}
+
+	// The open submenu: beside its row, on the right unless that runs off
+	// the window (then the left), moved up when it would pass the bottom.
+	// Placed exactly where it's hit-tested (a pinned overlay).
+	sub_rect: Rect
+	sub: Menu_Size
+	sub_items: []Menu_Item(Msg)
+	if sub_idx >= 0 {
+		sub_items = active_items[sub_idx].submenu
+		sub = menu_measure(ctx, m, sub_items)
+		row := menu_row_rect(m, active_items, dropdown_rect, sub_idx)
+		win := [2]f32{1e9, 1e9}
+		if ctx.renderer != nil { win = {f32(ctx.renderer.fb_size.x), f32(ctx.renderer.fb_size.y)} }
+		x := dropdown_rect.x + dropdown_rect.w - m.border
+		if x + sub.w > win.x { x = dropdown_rect.x - sub.w + m.border }
+		if x < 0 { x = 0 }
+		y := row.y - m.pad - m.border
+		if y + sub.h > win.y { y = win.y - sub.h }
+		if y < 0 { y = 0 }
+		sub_rect = Rect{x, y, sub.w, sub.h}
+		widget_stamp_overlay_rect(ctx.widgets, sub_rect)
+	}
+
+	// Outside-click dismiss: a press anywhere not in the bar, the dropdown or the submenu.
 	if open_idx >= 0 && ctx.input.mouse_pressed[.Left] && hover_trig < 0 &&
-	   !rect_contains_point(dropdown_rect, mouse) {
+	   !rect_contains_point(dropdown_rect, mouse) && !(sub_idx >= 0 && rect_contains_point(sub_rect, mouse)) {
 		open_idx = -1
+		sub_idx = -1
 	}
 
 	// Release-on-item fires the command. Release is the standard click
 	// convention in this codebase (matches select); mapping to press
-	// would race with the same-frame open.
-	item_hover := -1
-	if open_idx >= 0 && rect_contains_point(dropdown_rect, mouse) {
-		row_y := dropdown_rect.y + DROPDOWN_PAD + BORDER_W
-		inner_x := dropdown_rect.x + DROPDOWN_PAD + BORDER_W
-		inner_w := dropdown_rect.w - 2*(DROPDOWN_PAD + BORDER_W)
-		for item, i in active_items {
-			rh := SEP_H if item.separator else ROW_H
-			r := Rect{inner_x, row_y, inner_w, rh}
-			if !item.separator && !item.disabled &&
-			   rect_contains_point(r, mouse) {
-				item_hover = i
-				if ctx.input.mouse_released[.Left] {
-					send(ctx, item.msg)
-					open_idx = -1
-				}
+	// would race with the same-frame open. A row with a submenu sends
+	// nothing (its submenu's items do).
+	sub_hover := -1
+	if open_idx >= 0 && sub_idx >= 0 && rect_contains_point(sub_rect, mouse) {
+		if i := menu_row_at(m, sub_items, sub_rect, mouse); i >= 0 && !sub_items[i].separator && !sub_items[i].disabled {
+			sub_hover = i
+			if ctx.input.mouse_released[.Left] {
+				send(ctx, sub_items[i].msg)
+				open_idx = -1
+				sub_idx = -1
 			}
-			row_y += rh
+		}
+	} else if open_idx >= 0 && rect_contains_point(dropdown_rect, mouse) {
+		if i := menu_row_at(m, active_items, dropdown_rect, mouse); i >= 0 && !active_items[i].separator && !active_items[i].disabled {
+			item_hover = i
+			if ctx.input.mouse_released[.Left] && len(active_items[i].submenu) == 0 {
+				send(ctx, active_items[i].msg)
+				open_idx = -1
+				sub_idx = -1
+			}
 		}
 	}
 
-	// Swallow mouse edges inside the dropdown so siblings rendered
+	// Swallow mouse edges inside the dropdown and submenu so siblings rendered
 	// later don't also see them. Same convention as select / date_picker.
-	if open_idx >= 0 && rect_contains_point(dropdown_rect, mouse) {
+	if open_idx >= 0 && (rect_contains_point(dropdown_rect, mouse) || (sub_idx >= 0 && rect_contains_point(sub_rect, mouse))) {
 		ctx.input.mouse_pressed[.Left]  = false
 		ctx.input.mouse_released[.Left] = false
 	}
@@ -13796,6 +13820,7 @@ menu_bar :: proc(
 	}
 
 	st.cursor_pos = open_idx + 1
+	st.selection_anchor = sub_idx + 1 if open_idx >= 0 else 0
 
 	anim_op: f32 = 0
 	if open_idx >= 0 {
@@ -13846,58 +13871,171 @@ menu_bar :: proc(
 
 	if open_idx < 0 { return bar_zone }
 
+	// The open submenu's row stays highlighted while the pointer is in the submenu
+	highlight := item_hover
+	if sub_idx >= 0 && item_hover < 0 { highlight = sub_idx }
+	card := menu_card(ctx, m, active_items, drop, highlight)
+	anchor := trig_rects[open_idx]
+	if sub_idx < 0 {
+		return col(
+			bar_zone,
+			overlay(anchor, card, .Below, {0, 0}, anim_op),
+		)
+	}
+	return col(
+		bar_zone,
+		overlay(anchor, card, .Below, {0, 0}, anim_op),
+		overlay(Rect{sub_rect.x, sub_rect.y, 0, 0}, menu_card(ctx, m, sub_items, sub, sub_hover), .Below, {0, 0}, anim_op, pin = true),
+	)
+}
+
+// Menu_Metrics are a menu_bar dropdown's (and submenu's) row and padding sizes, from the theme.
+@(private)
+Menu_Metrics :: struct {
+	fs, fs_short:                     f32,
+	row_h, sep_h, row_pad_x:          f32,
+	shortcut_gap, pad, border, min_w: f32,
+}
+
+@(private)
+menu_metrics :: proc(ctx: ^Ctx($Msg)) -> Menu_Metrics {
+	th := ctx.theme
+	fs := th.font.size_md
+	return {
+		fs = fs, fs_short = th.font.size_sm,
+		row_h = fs + 2*th.spacing.sm + 4, sep_h = th.spacing.sm + 1, row_pad_x = th.spacing.md,
+		shortcut_gap = th.spacing.lg, pad = 4, border = 1, min_w = 160,
+	}
+}
+
+// Menu_Size is a menu's measured size and its check column's width (0: none).
+@(private)
+Menu_Size :: struct {
+	w, h:        f32,
+	check_col_w: f32,
+}
+
+// The ▸ a row with a submenu shows where a shortcut would go
+@(private)
+MENU_SUBMENU_ARROW :: "▸"
+
+// menu_measure sizes a menu: the widest label plus the widest shortcut
+// (or submenu arrow); separators are short rows.
+@(private)
+menu_measure :: proc(ctx: ^Ctx($Msg), m: Menu_Metrics, items: []Menu_Item(Msg)) -> Menu_Size {
+	max_label := f32(0)
+	max_short := f32(0)
+	has_checks := false
+	for item in items {
+		if item.separator { continue }
+		if item.checked { has_checks = true }
+		lw, _ := measure_text(ctx.renderer, item.label, m.fs)
+		if lw > max_label { max_label = lw }
+		short := shortcut_format(item.shortcut)
+		if item.submenu != nil { short = MENU_SUBMENU_ARROW }
+		if short != "" {
+			sw, _ := measure_text(ctx.renderer, short, m.fs_short)
+			if sw > max_short { max_short = sw }
+		}
+	}
+	size: Menu_Size
+	// Reserve a checkmark column only when this menu actually has a
+	// checked item right now — keeps unchecked menus visually identical
+	// to pre-1.2 builds. Width is the glyph + a spacing.sm gutter.
+	if has_checks {
+		cw, _ := measure_text(ctx.renderer, "✓", m.fs)
+		size.check_col_w = cw + ctx.theme.spacing.sm
+	}
+	inner_w := size.check_col_w + max_label + max_short
+	if max_short > 0 { inner_w += m.shortcut_gap }
+	size.w = max(inner_w + 2*(m.pad + m.border + m.row_pad_x), m.min_w)
+	size.h = 2*(m.pad + m.border)
+	for item in items {
+		size.h += m.sep_h if item.separator else m.row_h
+	}
+	return size
+}
+
+// menu_row_rect is row `index`'s rect inside a menu drawn at `rect`.
+@(private)
+menu_row_rect :: proc(m: Menu_Metrics, items: []Menu_Item($Msg), rect: Rect, index: int) -> Rect {
+	y := rect.y + m.pad + m.border
+	for item, i in items {
+		h := m.sep_h if item.separator else m.row_h
+		if i == index { return {rect.x + m.pad + m.border, y, rect.w - 2*(m.pad + m.border), h} }
+		y += h
+	}
+	return {}
+}
+
+// menu_row_at is the row under `p` in a menu drawn at `rect` (-1: none).
+@(private)
+menu_row_at :: proc(m: Menu_Metrics, items: []Menu_Item($Msg), rect: Rect, p: [2]f32) -> int {
+	for _, i in items {
+		if rect_contains_point(menu_row_rect(m, items, rect, i), p) { return i }
+	}
+	return -1
+}
+
+// menu_card builds a menu's card: its rows (label, shortcut or submenu
+// arrow, check column) on the elevated colour inside a one-pixel border.
+@(private)
+menu_card :: proc(ctx: ^Ctx($Msg), m: Menu_Metrics, items: []Menu_Item(Msg), size: Menu_Size, hover: int) -> View {
+	th := ctx.theme
 	// Build dropdown rows. Each non-separator row is a row( label,
 	// flex(1, spacer), short ) so the accelerator pins to the right
 	// edge regardless of label length.
-	inner_w := dropdown_w - 2*(DROPDOWN_PAD + BORDER_W)
-	rows := make([]View, len(active_items), context.temp_allocator)
-	for item, i in active_items {
+	inner_w := size.w - 2*(m.pad + m.border)
+	rows := make([]View, len(items), context.temp_allocator)
+	for item, i in items {
 		if item.separator {
 			rows[i] = col(
-				rect({inner_w - 2*ROW_PAD_X, 1}, th.color.border),
+				rect({inner_w - 2*m.row_pad_x, 1}, th.color.border),
 				width       = inner_w,
-				height      = SEP_H,
+				height      = m.sep_h,
 				main_align  = .Center,
 				cross_align = .Center,
 			)
 			continue
 		}
 
+		disabled := item.disabled || (item.submenu != nil && len(item.submenu) == 0)
 		row_bg := Color{}
 		fg     := th.color.fg
 		fg_sh  := th.color.fg_muted
-		if item.disabled {
+		if disabled {
 			fg    = th.color.fg_muted
 			fg_sh = th.color.fg_muted
-		} else if i == item_hover {
+		} else if i == hover {
 			row_bg = th.color.selection
 		}
 
 		short_str := shortcut_format(item.shortcut)
+		if item.submenu != nil { short_str = MENU_SUBMENU_ARROW }
 		short_view: View = spacer(0)
-		if short_str != "" { short_view = text(short_str, fg_sh, fs_short) }
+		if short_str != "" { short_view = text(short_str, fg_sh, m.fs_short) }
 
 		// Check column: empty spacer when the menu has no checks at all
 		// (check_col_w == 0), or for unchecked items in a menu that does.
 		// Only the actually-checked rows paint the glyph.
-		check_view: View = spacer(check_col_w)
+		check_view: View = spacer(size.check_col_w)
 		if item.checked {
 			check_view = col(
-				text("✓", fg, fs),
-				width       = check_col_w,
+				text("✓", fg, m.fs),
+				width       = size.check_col_w,
 				cross_align = .Start,
 			)
 		}
 
 		rows[i] = row(
-			spacer(ROW_PAD_X),
+			spacer(m.row_pad_x),
 			check_view,
-			text(item.label, fg, fs),
+			text(item.label, fg, m.fs),
 			flex(1, spacer(0)),
 			short_view,
-			spacer(ROW_PAD_X),
+			spacer(m.row_pad_x),
 			width       = inner_w,
-			height      = ROW_H,
+			height      = m.row_h,
 			main_align  = .Start,
 			cross_align = .Center,
 			bg          = row_bg,
@@ -13907,25 +14045,19 @@ menu_bar :: proc(
 
 	inner := col(..rows,
 		spacing     = 0,
-		padding     = DROPDOWN_PAD,
-		width       = dropdown_w - 2*BORDER_W,
+		padding     = m.pad,
+		width       = size.w - 2*m.border,
 		bg          = th.color.elevated,
 		radius      = th.radius.sm,
 		cross_align = .Start,
 	)
-	card := col(
+	return col(
 		inner,
-		padding     = BORDER_W,
-		width       = dropdown_w,
+		padding     = m.border,
+		width       = size.w,
 		bg          = th.color.border,
 		radius      = th.radius.sm,
 		cross_align = .Start,
-	)
-
-	anchor := trig_rects[open_idx]
-	return col(
-		bar_zone,
-		overlay(anchor, card, .Below, {0, 0}, anim_op),
 	)
 }
 

@@ -116,6 +116,20 @@ command_palette :: proc(
 	for entry in entries {
 		for item in entry.items {
 			if item.separator { continue }
+			// A submenu's items are commands ("File → Open Recent → notes.txt"); its row isn't
+			if item.submenu != nil {
+				for sub in item.submenu {
+					if sub.separator { continue }
+					prefix := item.label if len(entry.label) == 0 else strings.concatenate({entry.label, arrow, item.label}, context.temp_allocator)
+					append(&commands, Palette_Command(Msg){
+						path     = strings.concatenate({prefix, arrow, sub.label}, context.temp_allocator),
+						msg      = sub.msg,
+						shortcut = sub.shortcut,
+						disabled = sub.disabled || item.disabled,
+					})
+				}
+				continue
+			}
 			path: string
 			if len(entry.label) == 0 {
 				path = item.label

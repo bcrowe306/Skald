@@ -8,6 +8,13 @@ bug fixes bump the patch.
 
 ### Added
 
+- **Submenus in `menu_bar`:** `Menu_Item.submenu` makes a row open a second
+  menu beside the dropdown (File → Open Recent): ▸ in place of a shortcut,
+  opened by hovering or clicking the row, flipped to the left near the
+  window's right edge and moved up near its bottom, closed by hovering
+  another command; its items' shortcuts are registered and the command
+  palette lists them ("File → Open Recent → notes.txt"). One level deep.
+  Test: `menu_bar_submenus_open_on_hover_and_send_their_items`.
 - **Drawing on Skald's GPU device: `renderer_vulkan_handles` and
   `image_create_target`.** Another renderer (SDL's Vulkan renderer, given
   Skald's instance, devices and queue) draws into an image Skald samples, with

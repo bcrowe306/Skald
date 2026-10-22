@@ -21,6 +21,7 @@ Msg :: union {
 	Open_Clicked,
 	Save_Clicked,
 	Save_As_Clicked,
+	Open_Recent_Clicked,
 	Quit_Clicked,
 	Undo_Clicked,
 	Redo_Clicked,
@@ -37,6 +38,8 @@ New_Clicked     :: struct{}
 Open_Clicked    :: struct{}
 Save_Clicked    :: struct{}
 Save_As_Clicked :: struct{}
+// A file from File → Open Recent (a submenu)
+Open_Recent_Clicked :: struct{ name: string }
 Quit_Clicked    :: struct{}
 Undo_Clicked    :: struct{}
 Redo_Clicked    :: struct{}
@@ -59,11 +62,13 @@ log_line :: proc(s: ^State, msg: string) {
 
 update :: proc(s: State, m: Msg) -> (State, skald.Command(Msg)) {
 	out := s
-	switch _ in m {
+	switch v in m {
 	case New_Clicked:     log_line(&out, "File → New")
 	case Open_Clicked:    log_line(&out, "File → Open")
 	case Save_Clicked:    log_line(&out, "File → Save")
 	case Save_As_Clicked: log_line(&out, "File → Save As")
+	case Open_Recent_Clicked:
+		log_line(&out, v.name == "notes.txt" ? "File → Open Recent → notes.txt" : "File → Open Recent → todo.md")
 	case Quit_Clicked:    log_line(&out, "File → Quit")
 	case Undo_Clicked:    log_line(&out, "Edit → Undo")
 	case Redo_Clicked:    log_line(&out, "Edit → Redo")
@@ -93,6 +98,11 @@ view :: proc(s: State, ctx: ^skald.Ctx(Msg)) -> skald.View {
 			items = []skald.Menu_Item(Msg){
 				{label = "New",     shortcut = {.N, {.Ctrl}}, msg = New_Clicked{}},
 				{label = "Open…",   shortcut = {.O, {.Ctrl}}, msg = Open_Clicked{}},
+				// A submenu: hover the row and it opens beside the menu
+				{label = "Open Recent", submenu = []skald.Menu_Item(Msg){
+					{label = "notes.txt", msg = Open_Recent_Clicked{"notes.txt"}},
+					{label = "todo.md",   msg = Open_Recent_Clicked{"todo.md"}},
+				}},
 				{label = "Save",    shortcut = {.S, {.Ctrl}}, msg = Save_Clicked{}},
 				{label = "Save As…", shortcut = {.S, {.Ctrl, .Shift}}, msg = Save_As_Clicked{}},
 				{separator = true},

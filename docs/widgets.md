@@ -1435,6 +1435,21 @@ menus. Each `Menu_Item` carries a label, an optional `Shortcut`, the
   your state in `view`; dispatch a flip-msg on click. The leading
   column is only reserved when at least one item in the active menu
   is currently checked, so menus without checks lay out unchanged.
+- `submenu = []Menu_Item(Msg){...}` — the row opens a second menu
+  beside the dropdown (File → Open Recent): it shows ▸ instead of a
+  shortcut, hovering or clicking it opens the submenu (on the right,
+  or the left near the window's edge), and choosing a submenu item
+  sends its `msg` and closes both. Hovering another command closes
+  the submenu. One level deep; an empty submenu shows its row
+  disabled. The command palette lists submenu items as
+  "File → Open Recent → notes.txt".
+
+```odin
+{label = "Open Recent", submenu = []skald.Menu_Item(Msg){
+    {label = "notes.txt", msg = Open_Recent{"notes.txt"}},
+    {label = "todo.md",   msg = Open_Recent{"todo.md"}},
+}},
+```
 
 Need an icon next to a label? Use the same Font Awesome / Lucide /
 Phosphor fallback trick from the Fonts cookbook section — embed the
