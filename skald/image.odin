@@ -798,10 +798,7 @@ image_unload :: proc(r: ^Renderer, name: string) {
 	entry, ok := r.images.entries[name]
 	if !ok || entry == nil { return }
 	vk.DeviceWaitIdle(r.device)
-	if entry.dset  != 0 { vk.FreeDescriptorSets(r.device, r.images.dset_pool, 1, &entry.dset) }
-	if entry.view  != 0 { vk.DestroyImageView(r.device, entry.view, nil) }
-	if entry.image != 0 { vk.DestroyImage(r.device, entry.image, nil) }
-	if entry.mem   != 0 { vk.FreeMemory(r.device, entry.mem, nil) }
+	image_entry_free(r, entry)
 	for k in r.images.entries {
 		if k == name {
 			delete_key(&r.images.entries, k)
@@ -832,10 +829,7 @@ image_cache_evict_lru :: proc(c: ^Image_Cache, r: ^Renderer) {
 	if !found { return }
 	entry := c.entries[oldest_key]
 	if entry != nil {
-		if entry.dset  != 0 { vk.FreeDescriptorSets(r.device, c.dset_pool, 1, &entry.dset) }
-		if entry.view  != 0 { vk.DestroyImageView(r.device, entry.view, nil) }
-		if entry.image != 0 { vk.DestroyImage(r.device, entry.image, nil) }
-		if entry.mem   != 0 { vk.FreeMemory(r.device, entry.mem, nil) }
+		image_entry_free(r, entry)
 		free(entry)
 	}
 	delete_key(&c.entries, oldest_key)
@@ -847,10 +841,9 @@ image_cache_destroy :: proc(c: ^Image_Cache, r: ^Renderer) {
 	if c.entries != nil {
 		for key, entry in c.entries {
 			if entry == nil { continue }
-			if entry.view  != 0 { vk.DestroyImageView(r.device, entry.view, nil) }
-			if entry.image != 0 { vk.DestroyImage(r.device, entry.image, nil) }
-			if entry.mem   != 0 { vk.FreeMemory(r.device, entry.mem, nil) }
-			// Descriptor sets are freed wholesale when the pool is destroyed.
+			// Everything it holds, its streaming buffer and fence too (they were left to the
+			// device's destruction: validation's VUID-vkDestroyDevice-device-05137)
+			image_entry_free(r, entry)
 			free(entry)
 			delete(key)
 		}

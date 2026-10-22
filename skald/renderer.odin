@@ -107,12 +107,17 @@ Window_Target :: struct {
 	// teardown.
 	cmd_pool:         vk.CommandPool,
 
-	vertex_buf:       vk.Buffer,
-	vertex_mem:       vk.DeviceMemory,
-	vertex_buf_bytes: vk.DeviceSize,
-	index_buf:        vk.Buffer,
-	index_mem:        vk.DeviceMemory,
-	index_buf_bytes:  vk.DeviceSize,
+	// One vertex + index buffer per frame in flight (indexed by the frame's slot): a frame
+	// writes and may grow only its own slot's, whose fence frame_begin waited for, while the
+	// previous frame can still be reading the other's. (One shared pair was overwritten under
+	// a frame still drawing from it, and growing it destroyed a buffer in use: validation's
+	// VUID-vkDestroyBuffer-buffer-00922.)
+	vertex_buf:       [FRAMES_IN_FLIGHT]vk.Buffer,
+	vertex_mem:       [FRAMES_IN_FLIGHT]vk.DeviceMemory,
+	vertex_buf_bytes: [FRAMES_IN_FLIGHT]vk.DeviceSize,
+	index_buf:        [FRAMES_IN_FLIGHT]vk.Buffer,
+	index_mem:        [FRAMES_IN_FLIGHT]vk.DeviceMemory,
+	index_buf_bytes:  [FRAMES_IN_FLIGHT]vk.DeviceSize,
 
 	// Descriptor set bound at frame_end for the "default" (atlas-only)
 	// ranges. Image draws still get their own per-image sets allocated
@@ -536,10 +541,14 @@ frame_end :: proc(r: ^Renderer) {
 	vk.BeginCommandBuffer(cb, &bi)
 
 	range := vk.ImageSubresourceRange{aspectMask = {.COLOR}, levelCount = 1, layerCount = 1}
+	// The submit waits for the image (image_available) at COLOR_ATTACHMENT_OUTPUT, so the layout
+	// transition must start there too: from TOP_OF_PIPE it wasn't ordered after the wait and could
+	// write the image while the presentation engine still read it (validation's sync checks:
+	// SYNC-HAZARD-WRITE-AFTER-READ against vkAcquireNextImageKHR)
 	vk_image_barrier(cb, r.swap_images[img], range,
 		{}, {.COLOR_ATTACHMENT_WRITE},
 		.UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL,
-		{.TOP_OF_PIPE}, {.COLOR_ATTACHMENT_OUTPUT})
+		{.COLOR_ATTACHMENT_OUTPUT}, {.COLOR_ATTACHMENT_OUTPUT})
 
 	attach := vk.RenderingAttachmentInfo{
 		sType = .RENDERING_ATTACHMENT_INFO,
@@ -577,9 +586,9 @@ frame_end :: proc(r: ^Renderer) {
 		vk.CmdPushConstants(cb, r.pipeline.pipe_layout, {.VERTEX}, 0, size_of(Uniforms), &uni)
 
 		offset: vk.DeviceSize = 0
-		vbuf := r.vertex_buf
+		vbuf := r.vertex_buf[slot]
 		vk.CmdBindVertexBuffers(cb, 0, 1, &vbuf, &offset)
-		vk.CmdBindIndexBuffer(cb, r.index_buf, 0, .UINT32)
+		vk.CmdBindIndexBuffer(cb, r.index_buf[slot], 0, .UINT32)
 
 		// Default descriptor set for ranges that don't carry an override
 		// (which is everything except per-image ranges). Ranges that

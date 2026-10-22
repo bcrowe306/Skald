@@ -40,6 +40,21 @@ bug fixes bump the patch.
 
 ### Fixed
 
+Found by running with the Khronos validation layers (synchronization checks on):
+
+- **A frame could overwrite the vertex and index buffers the previous frame was
+  still drawing from.** Two frames are in flight, but each window had one pair,
+  written by every frame and, when it had to grow, destroyed under the frame
+  still using it (`VUID-vkDestroyBuffer-buffer-00922`). Each frame slot now has
+  its own pair, written only after `frame_begin` waited for that slot's fence.
+- **The swapchain image's layout transition wasn't ordered after the acquire.**
+  The submit waits for the image at `COLOR_ATTACHMENT_OUTPUT`, but the barrier
+  started at `TOP_OF_PIPE`, so it could write the image while the presentation
+  engine still read it (`SYNC-HAZARD-WRITE-AFTER-READ`). It starts at
+  `COLOR_ATTACHMENT_OUTPUT` now.
+- **Streamed images' staging buffers and fences leaked** when the cache was
+  destroyed, an image was unloaded or evicted: only `image_release` freed them
+  (`VUID-vkDestroyDevice-device-05137`). Every path frees an entry the same way.
 - **`select`'s popover could open somewhere other than where it reported it.**
   Its predicted row height (used for outside-click dismiss, the hover-bleed rect
   other widgets test against, and the above/below flip) was 6 px taller per row

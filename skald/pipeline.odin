@@ -95,34 +95,36 @@ target_upload_batch :: proc(r: ^Renderer, t: ^Window_Target, b: ^Batch) {
 	if len(b.vertices) == 0 { return }
 	vbytes := vk.DeviceSize(len(b.vertices) * size_of(Vertex))
 	ibytes := vk.DeviceSize(len(b.indices)  * size_of(u32))
+	// This frame's slot: frame_begin waited for its fence, so nothing reads these buffers now
+	s := t.cur_slot
 
-	if vbytes > t.vertex_buf_bytes {
-		if t.vertex_buf != 0 { vk.DestroyBuffer(r.device, t.vertex_buf, nil) }
-		if t.vertex_mem != 0 { vk.FreeMemory   (r.device, t.vertex_mem, nil) }
-		t.vertex_buf_bytes = vk.DeviceSize(next_pow2_u64(u64(vbytes)))
-		t.vertex_buf, t.vertex_mem = vk_make_buffer(
-			r, t.vertex_buf_bytes, {.VERTEX_BUFFER},
+	if vbytes > t.vertex_buf_bytes[s] {
+		if t.vertex_buf[s] != 0 { vk.DestroyBuffer(r.device, t.vertex_buf[s], nil) }
+		if t.vertex_mem[s] != 0 { vk.FreeMemory   (r.device, t.vertex_mem[s], nil) }
+		t.vertex_buf_bytes[s] = vk.DeviceSize(next_pow2_u64(u64(vbytes)))
+		t.vertex_buf[s], t.vertex_mem[s] = vk_make_buffer(
+			r, t.vertex_buf_bytes[s], {.VERTEX_BUFFER},
 			{.HOST_VISIBLE, .HOST_COHERENT},
 		)
 	}
-	if ibytes > t.index_buf_bytes {
-		if t.index_buf != 0 { vk.DestroyBuffer(r.device, t.index_buf, nil) }
-		if t.index_mem != 0 { vk.FreeMemory   (r.device, t.index_mem, nil) }
-		t.index_buf_bytes = vk.DeviceSize(next_pow2_u64(u64(ibytes)))
-		t.index_buf, t.index_mem = vk_make_buffer(
-			r, t.index_buf_bytes, {.INDEX_BUFFER},
+	if ibytes > t.index_buf_bytes[s] {
+		if t.index_buf[s] != 0 { vk.DestroyBuffer(r.device, t.index_buf[s], nil) }
+		if t.index_mem[s] != 0 { vk.FreeMemory   (r.device, t.index_mem[s], nil) }
+		t.index_buf_bytes[s] = vk.DeviceSize(next_pow2_u64(u64(ibytes)))
+		t.index_buf[s], t.index_mem[s] = vk_make_buffer(
+			r, t.index_buf_bytes[s], {.INDEX_BUFFER},
 			{.HOST_VISIBLE, .HOST_COHERENT},
 		)
 	}
 
 	ptr: rawptr
-	vk.MapMemory(r.device, t.vertex_mem, 0, vbytes, {}, &ptr)
+	vk.MapMemory(r.device, t.vertex_mem[s], 0, vbytes, {}, &ptr)
 	vk_copy_bytes(ptr, raw_data(b.vertices), int(vbytes))
-	vk.UnmapMemory(r.device, t.vertex_mem)
+	vk.UnmapMemory(r.device, t.vertex_mem[s])
 
-	vk.MapMemory(r.device, t.index_mem, 0, ibytes, {}, &ptr)
+	vk.MapMemory(r.device, t.index_mem[s], 0, ibytes, {}, &ptr)
 	vk_copy_bytes(ptr, raw_data(b.indices), int(ibytes))
-	vk.UnmapMemory(r.device, t.index_mem)
+	vk.UnmapMemory(r.device, t.index_mem[s])
 }
 
 // target_vk_init allocates the per-window descriptor set that binds
@@ -154,12 +156,14 @@ target_vk_init :: proc(r: ^Renderer, t: ^Window_Target, p: ^Pipeline, text: ^Tex
 target_vk_destroy :: proc(r: ^Renderer, t: ^Window_Target, p: ^Pipeline) {
 	d := r.device
 
-	if t.vertex_buf != 0 { vk.DestroyBuffer(d, t.vertex_buf, nil); t.vertex_buf = 0 }
-	if t.vertex_mem != 0 { vk.FreeMemory   (d, t.vertex_mem, nil); t.vertex_mem = 0 }
-	t.vertex_buf_bytes = 0
-	if t.index_buf  != 0 { vk.DestroyBuffer(d, t.index_buf,  nil); t.index_buf  = 0 }
-	if t.index_mem  != 0 { vk.FreeMemory   (d, t.index_mem,  nil); t.index_mem  = 0 }
-	t.index_buf_bytes = 0
+	for s in 0 ..< FRAMES_IN_FLIGHT {
+		if t.vertex_buf[s] != 0 { vk.DestroyBuffer(d, t.vertex_buf[s], nil); t.vertex_buf[s] = 0 }
+		if t.vertex_mem[s] != 0 { vk.FreeMemory   (d, t.vertex_mem[s], nil); t.vertex_mem[s] = 0 }
+		t.vertex_buf_bytes[s] = 0
+		if t.index_buf[s]  != 0 { vk.DestroyBuffer(d, t.index_buf[s],  nil); t.index_buf[s]  = 0 }
+		if t.index_mem[s]  != 0 { vk.FreeMemory   (d, t.index_mem[s],  nil); t.index_mem[s]  = 0 }
+		t.index_buf_bytes[s] = 0
+	}
 
 	if t.dset != 0 {
 		vk.FreeDescriptorSets(d, p.dset_pool, 1, &t.dset)
