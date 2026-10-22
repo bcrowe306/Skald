@@ -45,19 +45,39 @@ shortcut :: proc(ctx: ^Ctx($Msg), chord: Shortcut, msg: Msg) {
 	ctx.input.keys_pressed -= {chord.key}
 }
 
+// PRIMARY_MODIFIER is the platform's command key: Cmd (`.Super`) on
+// macOS, Ctrl elsewhere. Bind app shortcuts with it ({.S, {PRIMARY_MODIFIER}})
+// so Save is Cmd+S on a Mac and Ctrl+S on Windows and Linux.
+PRIMARY_MODIFIER :: Modifier.Super when ODIN_OS == .Darwin else Modifier.Ctrl
+
 // shortcut_format renders a chord as its conventional display string
-// — "Ctrl+S", "Ctrl+Shift+Z", "Alt+F4", etc. Used by menu_bar to paint
-// hints next to item labels; apps can call it directly when rolling
-// their own menus or tooltips. Output lives in the frame temp arena.
+// — "Ctrl+S", "Ctrl+Shift+Z", "Alt+F4", etc. On macOS the keys get their
+// Mac names, in the Mac's order: "Ctrl+Option+Shift+Cmd+S" (`.Super` is
+// Cmd, `.Alt` is Option). Used by menu_bar to paint hints next to item
+// labels; apps can call it directly when rolling their own menus or
+// tooltips. Output lives in the frame temp arena.
 shortcut_format :: proc(s: Shortcut) -> string {
+	return shortcut_format_for(s, ODIN_OS == .Darwin)
+}
+
+// shortcut_format_for is shortcut_format with the platform's naming
+// chosen: `mac` for the Mac's names and order.
+shortcut_format_for :: proc(s: Shortcut, mac: bool) -> string {
 	if shortcut_is_empty(s) { return "" }
 
 	parts: [dynamic]string
 	parts.allocator = context.temp_allocator
-	if .Ctrl  in s.mods { append(&parts, "Ctrl")  }
-	if .Shift in s.mods { append(&parts, "Shift") }
-	if .Alt   in s.mods { append(&parts, "Alt")   }
-	if .Super in s.mods { append(&parts, "Super") }
+	if mac {
+		if .Ctrl  in s.mods { append(&parts, "Ctrl")   }
+		if .Alt   in s.mods { append(&parts, "Option") }
+		if .Shift in s.mods { append(&parts, "Shift")  }
+		if .Super in s.mods { append(&parts, "Cmd")    }
+	} else {
+		if .Ctrl  in s.mods { append(&parts, "Ctrl")  }
+		if .Shift in s.mods { append(&parts, "Shift") }
+		if .Alt   in s.mods { append(&parts, "Alt")   }
+		if .Super in s.mods { append(&parts, "Super") }
+	}
 	append(&parts, key_display_name(s.key))
 
 	return strings.join(parts[:], "+", context.temp_allocator)

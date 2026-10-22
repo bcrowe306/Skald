@@ -13889,6 +13889,218 @@ menu_bar :: proc(
 	)
 }
 
+// popup_menu is a context menu the app opens itself: `items` (labels,
+// shortcut hints, checkmarks, separators, disabled rows, one level of
+// submenus, as menu_bar draws them) at `at` (window px; moved to stay in
+// the window), over everything.
+//
+// The app keeps whether it's open (Elm-style): build it while open and
+// stop when `on_close` arrives. Choosing an item sends its msg, then
+// `on_close`; a press outside the menu (either button), Escape, or the
+// window losing the pointer's attention send `on_close` only. Keys: Up /
+// Down move the highlight, Right opens a submenu, Left closes it, Enter
+// chooses. Unlike context_menu it doesn't open itself, so it can follow
+// any gesture: a right click that didn't drag, a long press, a key.
+//
+//     if s.menu.open {
+//         append(&views, skald.popup_menu(ctx, items, s.menu.at, Msg(Menu_Closed{}), id = skald.hash_id("ctx-menu")))
+//     }
+popup_menu :: proc(
+	ctx:      ^Ctx($Msg),
+	items:    []Menu_Item(Msg),
+	at:       [2]f32,
+	on_close: Msg,
+	id:       Widget_ID = 0,
+) -> View {
+	id := widget_resolve_id(ctx, id)
+	st := widget_get(ctx, id, .Menu_Bar)
+	m := menu_metrics(ctx)
+
+	// Opened somewhere new: nothing highlighted, no submenu, fade in again
+	if st.anchor_pos != at || st.last_frame == 0 {
+		st.anchor_pos = at
+		st.cursor_pos, st.selection_anchor, st.marquee_row = 0, 0, 0
+		st.anim_t, st.anim_prev_ns = 0, 0
+	}
+
+	size := menu_measure(ctx, m, items)
+	rect := overlay_placement_rect(ctx, Rect{at.x, at.y, 0, 0}, {size.w, size.h}, .Below, {0, 0})
+	// Keep it inside the window sideways too
+	if ctx.renderer != nil {
+		win := [2]f32{f32(ctx.renderer.fb_size.x), f32(ctx.renderer.fb_size.y)}
+		if rect.x + rect.w > win.x { rect.x = win.x - rect.w }
+		if rect.x < 0 { rect.x = 0 }
+	}
+
+	usable :: proc(item: Menu_Item($M)) -> bool {
+		return !item.separator && !item.disabled && !(item.submenu != nil && len(item.submenu) == 0)
+	}
+	// The next usable row from `from` going `dir` (wrapping); -1 if none
+	step :: proc(items: []Menu_Item($M), from, dir: int) -> int {
+		n := len(items)
+		if n == 0 { return -1 }
+		i := from
+		for _ in 0..<n {
+			i = (i + dir + n) %% n
+			if usable(items[i]) { return i }
+		}
+		return -1
+	}
+
+	sub_idx := st.selection_anchor - 1
+	if sub_idx >= len(items) || (sub_idx >= 0 && len(items[sub_idx].submenu) == 0) { sub_idx = -1 }
+	key_row := st.cursor_pos - 1
+	sub_key := st.marquee_row - 1
+	mouse := ctx.input.mouse_pos
+
+	// The pointer: hovering a row with a submenu opens it, another command closes it
+	if rect_contains_point(rect, mouse) {
+		if i := menu_row_at(m, items, rect, mouse); i >= 0 && !items[i].separator {
+			key_row = i
+			if usable(items[i]) && len(items[i].submenu) > 0 {
+				if sub_idx != i { sub_key = -1 }
+				sub_idx = i
+			} else {
+				sub_idx = -1
+			}
+		}
+	}
+
+	// The open submenu: beside its row, on the right unless that runs off the window
+	sub_rect: Rect
+	sub: Menu_Size
+	sub_items: []Menu_Item(Msg)
+	place_sub :: proc(ctx: ^Ctx($M), m: Menu_Metrics, items: []Menu_Item(M), rect: Rect, index: int) -> (Rect, Menu_Size) {
+		sub := menu_measure(ctx, m, items[index].submenu)
+		row := menu_row_rect(m, items, rect, index)
+		win := [2]f32{1e9, 1e9}
+		if ctx.renderer != nil { win = {f32(ctx.renderer.fb_size.x), f32(ctx.renderer.fb_size.y)} }
+		x := rect.x + rect.w - m.border
+		if x + sub.w > win.x { x = rect.x - sub.w + m.border }
+		if x < 0 { x = 0 }
+		y := row.y - m.pad - m.border
+		if y + sub.h > win.y { y = win.y - sub.h }
+		if y < 0 { y = 0 }
+		return Rect{x, y, sub.w, sub.h}, sub
+	}
+	if sub_idx >= 0 {
+		sub_items = items[sub_idx].submenu
+		sub_rect, sub = place_sub(ctx, m, items, rect, sub_idx)
+	}
+	over_sub := sub_idx >= 0 && rect_contains_point(sub_rect, mouse)
+	sub_hover := -1
+	if over_sub {
+		if i := menu_row_at(m, sub_items, sub_rect, mouse); i >= 0 && usable(sub_items[i]) {
+			sub_hover = i
+			sub_key = i
+		}
+	}
+
+	close := false
+	chosen: Maybe(Msg)
+	// Keys
+	keys := ctx.input.keys_pressed
+	if .Escape in keys {
+		if sub_idx >= 0 && sub_key >= 0 { sub_idx, sub_key = -1, -1 } else { close = true }
+	}
+	if sub_idx >= 0 && sub_key >= 0 {
+		if .Down in keys { sub_key = step(sub_items, sub_key, 1) }
+		if .Up in keys   { sub_key = step(sub_items, sub_key, -1) }
+		if .Left in keys { sub_idx, sub_key = -1, -1 }
+		if .Enter in keys && sub_key >= 0 && usable(sub_items[sub_key]) { chosen = sub_items[sub_key].msg }
+	} else {
+		if .Down in keys { key_row = step(items, key_row, 1) }
+		if .Up in keys   { key_row = step(items, key_row < 0 ? 0 : key_row, -1) }
+		if key_row >= 0 && key_row < len(items) && usable(items[key_row]) {
+			has_sub := len(items[key_row].submenu) > 0
+			if has_sub && (.Right in keys || .Enter in keys) {
+				sub_idx = key_row
+				sub_key = step(items[key_row].submenu, -1, 1)
+				sub_items = items[sub_idx].submenu
+				sub_rect, sub = place_sub(ctx, m, items, rect, sub_idx)
+			} else if !has_sub && .Enter in keys {
+				chosen = items[key_row].msg
+			}
+		}
+	}
+	ctx.input.keys_pressed -= {.Up, .Down, .Left, .Right, .Enter, .Escape}
+
+	// Clicks: a release on a command chooses it; a press outside closes
+	over_menu := rect_contains_point(rect, mouse) || over_sub
+	if ctx.input.mouse_released[.Left] {
+		if over_sub && sub_hover >= 0 {
+			chosen = sub_items[sub_hover].msg
+		} else if rect_contains_point(rect, mouse) {
+			if i := menu_row_at(m, items, rect, mouse); i >= 0 && usable(items[i]) && len(items[i].submenu) == 0 {
+				chosen = items[i].msg
+			}
+		}
+	}
+	if !over_menu && (ctx.input.mouse_pressed[.Left] || ctx.input.mouse_pressed[.Right] || ctx.input.mouse_pressed[.Middle]) {
+		close = true
+	}
+	// The menu's clicks are its own
+	if over_menu {
+		ctx.input.mouse_pressed[.Left], ctx.input.mouse_released[.Left] = false, false
+		ctx.input.mouse_pressed[.Right], ctx.input.mouse_released[.Right] = false, false
+		ctx.input.scroll = {}
+	}
+	if c, ok := chosen.?; ok {
+		send(ctx, c)
+		close = true
+	}
+	if close {
+		send(ctx, on_close)
+		// Still built next frame (the app hasn't seen on_close yet): nothing left open
+		key_row, sub_idx, sub_key = -1, -1, -1
+	}
+
+	widget_stamp_overlay_rect(ctx.widgets, rect)
+	if sub_idx >= 0 { widget_stamp_overlay_rect(ctx.widgets, sub_rect) }
+	st.cursor_pos = key_row + 1
+	st.selection_anchor = sub_idx + 1
+	st.marquee_row = sub_key + 1
+	anim_op := widget_anim_step(ctx, &st, 1, 0.12)
+	widget_set(ctx, id, st)
+
+	// The open submenu's row stays highlighted while the pointer is in it
+	highlight := key_row
+	if sub_idx >= 0 && !rect_contains_point(rect, mouse) { highlight = sub_idx }
+	card := menu_card(ctx, m, items, size, highlight)
+	views := make([dynamic]View, context.temp_allocator)
+	append(&views, overlay(Rect{rect.x, rect.y, 0, 0}, card, .Below, {0, 0}, anim_op, pin = true))
+	if sub_idx >= 0 {
+		append(&views, overlay(Rect{sub_rect.x, sub_rect.y, 0, 0}, menu_card(ctx, m, sub_items, sub, sub_key), .Below, {0, 0}, anim_op, pin = true))
+	}
+	return col(..views[:], spacing = 0)
+}
+
+// popup_menu_row_rect is where row `index` of a popup_menu opened at `at`
+// is drawn this frame (`sub` >= 0: row `index` of that row's submenu), for
+// tests and tools that click menu rows by position.
+popup_menu_row_rect :: proc(ctx: ^Ctx($Msg), items: []Menu_Item(Msg), at: [2]f32, index: int, sub := -1) -> Rect {
+	m := menu_metrics(ctx)
+	size := menu_measure(ctx, m, items)
+	rect := overlay_placement_rect(ctx, Rect{at.x, at.y, 0, 0}, {size.w, size.h}, .Below, {0, 0})
+	if ctx.renderer != nil {
+		win := [2]f32{f32(ctx.renderer.fb_size.x), f32(ctx.renderer.fb_size.y)}
+		if rect.x + rect.w > win.x { rect.x = win.x - rect.w }
+		if rect.x < 0 { rect.x = 0 }
+	}
+	if sub < 0 { return menu_row_rect(m, items, rect, index) }
+	sm := menu_measure(ctx, m, items[sub].submenu)
+	row := menu_row_rect(m, items, rect, sub)
+	win := [2]f32{1e9, 1e9}
+	if ctx.renderer != nil { win = {f32(ctx.renderer.fb_size.x), f32(ctx.renderer.fb_size.y)} }
+	x := rect.x + rect.w - m.border
+	if x + sm.w > win.x { x = rect.x - sm.w + m.border }
+	if x < 0 { x = 0 }
+	y := row.y - m.pad - m.border
+	if y + sm.h > win.y { y = win.y - sm.h }
+	if y < 0 { y = 0 }
+	return menu_row_rect(m, items[sub].submenu, Rect{x, y, sm.w, sm.h}, index)
+}
+
 // Menu_Metrics are a menu_bar dropdown's (and submenu's) row and padding sizes, from the theme.
 @(private)
 Menu_Metrics :: struct {

@@ -8,6 +8,23 @@ bug fixes bump the patch.
 
 ### Added
 
+- **Choosing several files: `cmd_open_file_dialog(..., allow_many = true)`.**
+  Every file chosen arrives in `File_Dialog_Result.paths` (the handler frees
+  the slice and its strings; `path` is the first of them). Without it nothing
+  changes.
+- **`popup_menu`: a context menu the app opens itself.** `Menu_Item`s (shortcut
+  hints, checks, separators, disabled rows, one level of submenus, drawn as
+  `menu_bar` draws them) at a point the app keeps in its state, so it can follow
+  any gesture (a right click that didn't drag, a long press, a key). Choosing an
+  item sends its msg then `on_close`; a press outside, Escape or the window
+  losing the pointer send `on_close`. Up / Down / Right / Left / Enter walk it.
+  `popup_menu_row_rect` says where a row is drawn (for tests and tools). Test:
+  `popup_menu_chooses_and_closes`.
+- **Mac key names: `shortcut_format` and `PRIMARY_MODIFIER`.** On macOS,
+  `shortcut_format` names keys the Mac way and in its order ("Shift+Cmd+Z":
+  `.Super` is Cmd, `.Alt` Option); `shortcut_format_for(s, mac)` picks either.
+  `PRIMARY_MODIFIER` is the platform's command key (Cmd on macOS, Ctrl
+  elsewhere) for binding shortcuts. Test: `shortcut_format_names_keys_per_platform`.
 - **Submenus in `menu_bar`:** `Menu_Item.submenu` makes a row open a second
   menu beside the dropdown (File → Open Recent): ▸ in place of a shortcut,
   opened by hovering or clicking the row, flipped to the left near the

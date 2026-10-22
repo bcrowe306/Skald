@@ -77,6 +77,11 @@ home_dir_or_empty :: proc() -> string {
 File_Dialog_Result :: struct {
 	path:      string,
 	cancelled: bool,
+	// With `allow_many` (cmd_open_file_dialog): every file chosen, on the
+	// persistent heap (the slice and each string), the handler's to free;
+	// `path` is paths[0] then (the same string: free it once). Nil without
+	// allow_many.
+	paths:     []string,
 }
 
 // File_Filter describes one entry in the dialog's filter picker.
@@ -169,10 +174,14 @@ cmd_write_file :: proc(
 // (the default) falls back to the user's home directory — apps that
 // remember the last-used location should pass it here for the
 // "open where I left off" UX.
+//
+// `allow_many` lets the user pick several files at once: they arrive in
+// `File_Dialog_Result.paths` (see there for who frees what).
 cmd_open_file_dialog :: proc(
 	filters:          []File_Filter,
 	on_result:        proc(File_Dialog_Result) -> $Msg,
 	default_location: string = "",
+	allow_many:       bool = false,
 ) -> Command(Msg) {
 	op := new(Async_Op(Msg), context.temp_allocator)
 	op^ = Async_File_Dialog(Msg){
@@ -180,6 +189,7 @@ cmd_open_file_dialog :: proc(
 		filters          = filters,
 		on_result        = on_result,
 		default_location = default_location,
+		allow_many       = allow_many,
 	}
 	return Command(Msg){kind = .Async, async = op}
 }
@@ -274,6 +284,8 @@ Async_File_Dialog :: struct($Msg: typeid) {
 	filters:          []File_Filter,
 	on_result:        proc(File_Dialog_Result) -> Msg,
 	default_location: string,
+	// Open only: several files may be chosen (File_Dialog_Result.paths)
+	allow_many:       bool,
 }
 
 // Read_Slot holds one outstanding read. The runtime allocates it on
@@ -350,6 +362,9 @@ Dialog_Pending :: struct {
 	done:      bool,
 	cancelled: bool,
 	path:      string,
+	// Several files may be chosen: every one goes to `paths` (path is paths[0])
+	many:      bool,
+	paths:     []string,
 }
 
 // Io_State collects every in-flight async op owned by `run`. Holding
@@ -484,6 +499,7 @@ process_async :: proc(
 	case Async_File_Dialog(Msg):
 		slot := new(Dialog_Slot(Msg))
 		slot.on_result = v.on_result
+		slot.pending.many = v.kind == .Open && v.allow_many
 
 		// Translate each File_Filter into the SDL representation. Name
 		// and pattern cstrings live on the persistent heap and are
@@ -531,7 +547,7 @@ process_async :: proc(
 				filters          = filters_ptr,
 				nfilters         = c.int(n),
 				default_location = slot.default_location,
-				allow_many       = false,
+				allow_many       = slot.pending.many,
 			)
 		case .Save:
 			sdl3.ShowSaveFileDialog(
@@ -572,6 +588,16 @@ on_file_dialog_chosen :: proc "c" (
 	p := cast(^Dialog_Pending) userdata
 	if filelist == nil || filelist[0] == nil {
 		p.cancelled = true
+	} else if p.many {
+		// Every file chosen (filelist ends with a nil)
+		n := 0
+		for filelist[n] != nil { n += 1 }
+		p.paths = make([]string, n)
+		for i in 0..<n {
+			cloned, _ := strings.clone(string(filelist[i]))
+			p.paths[i] = cloned
+		}
+		p.path = p.paths[0]
 	} else {
 		cloned, _ := strings.clone(string(filelist[0]))
 		p.path = cloned
@@ -739,6 +765,7 @@ drain_io :: proc(
 		result := File_Dialog_Result{
 			path      = slot.pending.path,
 			cancelled = slot.pending.cancelled,
+			paths     = slot.pending.paths,
 		}
 		append(msgs, slot.on_result(result))
 
