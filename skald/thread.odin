@@ -193,7 +193,13 @@ cmd_thread :: proc($Msg: typeid,
 	// finishes.
 	runner :: proc(data: rawptr) {
 		j := cast(^Job) data
+		prof_name_thread("cmd_thread")
+		prof_begin("cmd_thread")
 		msg := j.work(j.payload)
+		prof_end()
+		// The trace's buffer goes before the pool counts this worker done: shutdown waits for
+		// that, then stops the trace (prof.odin)
+		prof_thread_end()
 		pool := j.op.pool
 		sync.lock(&pool.lock)
 		append(&pool.msgs, msg)
@@ -239,7 +245,11 @@ cmd_thread_simple :: proc($Msg: typeid,
 	// before returning.
 	runner :: proc(data: rawptr) {
 		j := cast(^Job) data
+		prof_name_thread("cmd_thread")
+		prof_begin("cmd_thread")
 		msg := j.work()
+		prof_end()
+		prof_thread_end()
 		pool := j.op.pool
 		sync.lock(&pool.lock)
 		append(&pool.msgs, msg)

@@ -478,6 +478,7 @@ draw_text :: proc(
 	size:  f32 = 14,
 	font:  Font = 0,
 ) {
+	prof_scope("draw_text")
 	// Expand tabs so the editable text_input (which shapes its raw buffer)
 	// draws `\t` as whitespace, not missing-glyph tofu. No-ops if tab-free.
 	text := expand_tabs(text)
@@ -534,6 +535,7 @@ measure_text :: proc(
 	size: f32 = 14,
 	font: Font = 0,
 ) -> (width, line_height: f32) {
+	prof_scope("measure_text")
 	// Expand tabs so a `\t` measures as TAB_WIDTH spaces (matching draw_text /
 	// text_line_advances) — keeps text_input's caret, selection, and offset
 	// accessors aligned with the drawn glyphs. No-ops if tab-free.
@@ -947,6 +949,7 @@ wrap_text :: proc(
 	size:      f32  = 14,
 	font:      Font = 0,
 ) -> []string {
+	prof_scope("wrap_text")
 	if max_width <= 0 {
 		// No-wrap mode: just split on line breaks and return.
 		return split_lines(text)

@@ -8,6 +8,19 @@ bug fixes bump the patch.
 
 ### Added
 
+- **Profiling with Spall: `-define:SPALL=true`.** `prof_scope("name")` (and
+  `prof_begin` / `prof_end`) record spans into a `.spall` trace
+  (https://gravitymoth.com/spall/); without the define they compile to nothing.
+  `skald.run` starts a trace when none runs (`SPALL_TRACE` names the file,
+  default `trace.spall`) and stops it when the loop ends; the frame loop's
+  spans are `frame` (`frame_begin`, `view`, `render_view`, `render_overlays`,
+  `frame_end`, `update`), `events`, `idle` and `pace`, and text has
+  `measure_text`, `draw_text`, `wrap_text`. Each thread records into its own
+  buffer (`cmd_thread` workers write theirs before the pool counts them done);
+  another library joins the trace with `prof_context` and
+  `prof_thread_buffer`. `-define:SPALL_AUTO=true` also records every procedure
+  through Odin's instrumentation hooks. See docs/benchmarks.md, "Profiling
+  with Spall".
 - **Choosing several files: `cmd_open_file_dialog(..., allow_many = true)`.**
   Every file chosen arrives in `File_Dialog_Result.paths` (the handler frees
   the slice and its strings; `path` is the first of them). Without it nothing

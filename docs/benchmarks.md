@@ -134,6 +134,58 @@ SKALD_BENCH_STATS frames=599 avg_ms=1.223 p50_ms=1.211 p95_ms=1.286
 One line, key=value, so you can pipe into a CSV or grep into a results
 file. RSS is Linux-only (`/proc/self/statm`); other platforms emit -1.
 
+## Profiling with Spall
+
+The bench numbers say how long a frame takes; a [Spall](https://gravitymoth.com/spall/)
+trace says where it goes. Build with `-define:SPALL=true` and every
+`prof_scope` in Skald (and in the app) is recorded; without it they compile to
+nothing (`skald/prof.odin`).
+
+```bash
+# The bench suite with a trace per example (build/traces/<example>.spall), headless
+SPALL=1 HEADLESS=1 ./bench.sh
+SPALL=1 HEADLESS=1 ONLY=00_gallery ./bench.sh
+# Or by hand: an optimized build with the trace on
+odin build examples/00_gallery -collection:gui=. -define:SPALL=true -o:speed -out:build/gallery_spall
+SPALL_TRACE=gallery.spall SKALD_BENCH_FRAMES=600 SKALD_BENCH_UNCAP=1 ./build/gallery_spall
+# Open the .spall file at https://gravitymoth.com/spall/ (drag the file in)
+```
+
+`HEADLESS=1` runs on SDL's offscreen video driver (Vulkan through
+`VK_EXT_headless_surface`) with the dummy audio driver: no window opens, so a
+run can't take the keyboard or be resized by a tiling window manager. The
+traces' frame times are the work of a frame; the bench line's include waiting
+on the display.
+
+- **What's recorded:** each rendered frame is a `frame` span holding
+  `frame_begin` (acquiring the swapchain image), `view` (the app's view),
+  `render_view` (layout and drawing), `render_overlays`, `frame_end` (GPU
+  submit and present) and `update` (the messages). Between frames: `events`
+  (the pump and queues), `idle` (waiting for events) and `pace` (the MAILBOX
+  frame-rate sleep). Text: `measure_text`, `draw_text`, `wrap_text`. Workers:
+  `cmd_thread`.
+- **Your own spans:** `skald.prof_scope("name")` at the top of a block records it
+  to the block's end; `prof_begin` / `prof_end` for spans that don't match a
+  block.
+- **The file:** `skald.run` starts a trace unless the app already did
+  (`prof_start(path)`), named by `SPALL_TRACE` (default `trace.spall` in the
+  working folder), and stops it when the loop ends. An app that exits with
+  `os.exit` after `run` must call `prof_stop` first (`os.exit` runs no defers).
+- **Threads:** each thread records into its own buffer, made the first time it
+  records and written when full, when the thread ends (`prof_thread_end`;
+  `cmd_thread` calls it) or when the trace stops.
+- **Another library in the same trace:** hand it `prof_context()` and
+  `prof_thread_buffer` (the Crossfire engine's `Trace_Share`), so one thread's
+  events from both nest in one buffer.
+- **Every procedure:** `-define:SPALL_AUTO=true` (with SPALL) records every
+  procedure that isn't `@(no_instrumentation)` through Odin's
+  `@(instrumentation_enter)` / `@(instrumentation_exit)` hooks, which Skald
+  defines then: far more detail and much slower frames, for finding hot spots no
+  scope names yet. Measure with scopes, find with this.
+- **Reading a trace without the viewer:** the Crossfire engine's
+  `tools/spall_report` prints the time per span (total, self, per frame) and
+  frame-time statistics, and compares two runs.
+
 ## Stress test: long-text word-wrap
 
 The canonical examples above measure normal UI density — short labels,

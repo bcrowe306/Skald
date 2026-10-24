@@ -66,6 +66,7 @@ odin build "examples/${EXAMPLE}" \
     -collection:gui=. \
     ${DEBUG_FLAG} \
     ${RUNA_DEFINE} \
+    ${EXTRA_DEFINES:-} \
     -out:"build/${EXAMPLE}"
 
 if [[ "$ACTION" == "run" ]]; then

@@ -552,6 +552,11 @@ dispatch_window_close :: proc(
 // every frame — so `view` implementations can allocate freely via the
 // `skald.col` / `skald.row` / `skald.clip` builders without leaking.
 run :: proc(app: App($State, $Msg)) {
+	// A trace when built with SPALL (prof.odin), unless the app started one; its defer runs
+	// last, after the workers have finished
+	prof_started_here := !prof_running() && prof_start()
+	defer if prof_started_here { prof_stop() }
+
 	w, ok := window_open(app.title, app.size, app.initial_window_state, app.window_flags)
 	if !ok { return }
 	defer window_close(&w)
@@ -692,6 +697,7 @@ run :: proc(app: App($State, $Msg)) {
 	bench_rss_start_kb  := _bench_rss_kb()
 
 	for !w.should_close {
+		prof_begin("events")
 		// Multi-window event pump: collect every open target's platform
 		// window into a temp slice, reset each one's per-frame edges,
 		// then let the dispatcher route SDL events by windowID. With
@@ -867,6 +873,8 @@ run :: proc(app: App($State, $Msg)) {
 			app.always_redraw ||  // opt-out of lazy redraw — DAWs / live video
 			bench_frames_target > 0  // bench mode forces every frame
 
+		prof_end() // events
+
 		if !dirty {
 			// No state change this frame — skip the expensive render +
 			// update pipeline. Block on SDL's event queue (up to
@@ -906,7 +914,10 @@ run :: proc(app: App($State, $Msg)) {
 			// keep servicing the wayland queue every iteration to answer the
 			// receiving app's data request before it times out (request 019).
 			if dragout_in_progress() { wait_ms = 0 }
-			if wait_ms > 0 { _ = sdl3.WaitEventTimeout(nil, wait_ms) }
+			if wait_ms > 0 {
+				prof_scope("idle")
+				_ = sdl3.WaitEventTimeout(nil, wait_ms)
+			}
 			free_all(context.temp_allocator)
 			continue
 		}
@@ -921,6 +932,7 @@ run :: proc(app: App($State, $Msg)) {
 		// swapchain. fb_size travels via push constants, so every draw
 		// carries the current window's dimensions without touching
 		// shared state. No DeviceWaitIdle between targets.
+		prof_begin("frame")
 		had_focus = false
 		primary := r.targets[0]
 		// `frame_cursor` accumulates the cursor shape any window's view
@@ -1035,7 +1047,10 @@ run :: proc(app: App($State, $Msg)) {
 			// .TRANSPARENT flag does nothing visible.
 			clear_color := th.color.bg
 			if t_w.transparent { clear_color.a = 0 }
-			if frame_begin(&r, t_w, clear_color) {
+			prof_begin("frame_begin")
+			began := frame_begin(&r, t_w, clear_color)
+			prof_end()
+			if began {
 				ctx := Ctx(Msg){
 					theme      = &th,
 					labels     = &lbls,
@@ -1046,13 +1061,19 @@ run :: proc(app: App($State, $Msg)) {
 					window     = Window_Id(t),
 					breakpoint = breakpoint_for_width(f32(t_w.size_logical.x)),
 				}
+				prof_begin("view")
 				v := app.view(state, &ctx)
+				prof_end()
 				win_size := [2]f32{f32(t_w.size_logical.x), f32(t_w.size_logical.y)}
+				prof_begin("render_view")
 				render_view(&r, v, {0, 0}, win_size)
+				prof_end()
 				// Overlays (dropdowns, tooltips, menus) drew nothing during
 				// the main pass — they only queued themselves. Drain the
 				// queue now so they sit on top in draw order.
+				prof_begin("render_overlays")
 				render_overlays(&r)
+				prof_end()
 
 				// In-window drag ghost: drawn on top of overlays at the cursor.
 				// The visual is the temp-arena View the active source supplied
@@ -1083,7 +1104,9 @@ run :: proc(app: App($State, $Msg)) {
 						inspector_render(&r, t_widgets, &t_w.input)
 					}
 				}
+				prof_begin("frame_end")
 				frame_end(&r)
+				prof_end()
 			}
 
 			// Cross-app drag icon (request 019, stage 2): the frame after a
@@ -1159,6 +1182,7 @@ run :: proc(app: App($State, $Msg)) {
 		// flag again so the next iteration paints the post-update state.
 		state_may_have_changed = false
 		quit_requested := false
+		prof_begin("update")
 		for len(msgs) > 0 {
 			state_may_have_changed = true
 			frame_msgs := make([dynamic]Msg, context.temp_allocator)
@@ -1178,6 +1202,9 @@ run :: proc(app: App($State, $Msg)) {
 			}
 		}
 
+		prof_end() // update
+		prof_end() // frame
+
 		// `cmd_quit` from any update above exits the loop next iteration.
 		if quit_requested { w.should_close = true }
 
@@ -1188,6 +1215,7 @@ run :: proc(app: App($State, $Msg)) {
 		if r.present_mode == .MAILBOX {
 			if last_frame_tick != (time.Tick{}) {
 				if rem := frame_period - time.tick_since(last_frame_tick); rem > 0 {
+					prof_scope("pace")
 					time.sleep(rem)
 				}
 			}
