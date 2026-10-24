@@ -1,6 +1,7 @@
 package skald
 
 import "core:fmt"
+import "core:hash"
 import "core:strings"
 import "core:unicode/utf8"
 import fs "vendor:fontstash"
@@ -95,10 +96,67 @@ Text :: struct {
 	// 1.4 MB Twemoji bytes or appending duplicate font entries.
 	default_emoji_font:        Font,
 	default_emoji_font_loaded: bool,
+
+	// measure_cache keeps `measure_text`'s results across frames, keyed by
+	// the text's content (not its pointer: views rebuild their strings every
+	// frame), size, font and DPI scale. Most labels never change, so most
+	// measurements become a lookup instead of a paragraph layout. Entries
+	// unused for MEASURE_CACHE_KEEP_FRAMES frames are dropped
+	// (`text_measure_cache_tick`, from frame_begin); loading a font or
+	// chaining a fallback clears it (a measurement depends on the stack).
+	measure_cache: map[Measure_Key]Measure_Entry,
+	// Frames counted by text_measure_cache_tick (an entry's age)
+	measure_frame: u64,
+}
+
+// Measure_Key identifies a measurement: the text by a hash of its bytes and
+// its length, and the arguments that change the result.
+@(private)
+Measure_Key :: struct {
+	hash:  u64,
+	len:   int,
+	size:  f32,
+	font:  Font,
+	scale: f32,
+}
+
+// A cached measurement and the frame it was last used in
+@(private)
+Measure_Entry :: struct {
+	width, height: f32,
+	used:          u64,
+}
+
+// MEASURE_CACHE_KEEP_FRAMES is how long an unused measurement is kept; the
+// cache is swept that often too.
+MEASURE_CACHE_KEEP_FRAMES :: 240
+
+// MEASURE_CACHE_MAX bounds the cache: past it, a sweep clears it whole
+// (an app measuring that much distinct text a few seconds apart, like a
+// scrolling log, gains nothing from keeping it).
+MEASURE_CACHE_MAX :: 65536
+
+// text_measure_cache_tick counts a frame and, every
+// MEASURE_CACHE_KEEP_FRAMES, drops what wasn't used since the last sweep.
+@(private)
+text_measure_cache_tick :: proc(t: ^Text) {
+	t.measure_frame += 1
+	if t.measure_frame % MEASURE_CACHE_KEEP_FRAMES != 0 { return }
+	if len(t.measure_cache) > MEASURE_CACHE_MAX {
+		clear(&t.measure_cache)
+		return
+	}
+	stale := make([dynamic]Measure_Key, context.temp_allocator)
+	for key, entry in t.measure_cache {
+		if t.measure_frame - entry.used >= MEASURE_CACHE_KEEP_FRAMES { append(&stale, key) }
+	}
+	for key in stale { delete_key(&t.measure_cache, key) }
 }
 
 @(private)
 text_init :: proc(t: ^Text, r: ^Renderer) -> (ok: bool) {
+	// The measurement cache outlives frames: the heap, not the frame arena
+	t.measure_cache = make(map[Measure_Key]Measure_Entry, context.allocator)
 	fs.Init(&t.fs, ATLAS_SIZE, ATLAS_SIZE, .TOPLEFT)
 	t.fs.userData       = t
 	t.fs.callbackResize = text_on_resize
@@ -173,6 +231,8 @@ text_destroy :: proc(t: ^Text, r: ^Renderer) {
 	}
 	text_destroy_gpu_image(t, r)
 	fs.Destroy(&t.fs)
+	delete(t.measure_cache)
+	t.measure_cache = nil
 }
 
 @(private)
@@ -395,6 +455,7 @@ font_bold_italic :: proc(r: ^Renderer) -> Font {
 // font_load registers a TTF/OTF font from memory. The bytes are borrowed —
 // callers must keep the slice alive for the lifetime of the renderer.
 font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
+	clear(&r.text.measure_cache)
 	if r.text.runa_state != nil {
 		return font_load_runa(r, name, data)
 	}
@@ -417,6 +478,7 @@ font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
 // Skald ships only with Inter (Latin + Cyrillic); apps targeting
 // other scripts bundle the TTFs they need and register them here.
 font_add_fallback :: proc(r: ^Renderer, base, fallback: Font) -> bool {
+	clear(&r.text.measure_cache)
 	if r.text.runa_state != nil {
 		return font_add_fallback_runa(r, base, fallback)
 	}
@@ -528,7 +590,8 @@ text_ascent :: proc(r: ^Renderer, size: f32, font: Font = 0) -> f32 {
 
 // measure_text returns the advance width and line height of the string at
 // the given size. Useful for layout code that needs to size a label before
-// rendering.
+// rendering. Results are cached across frames (`Text.measure_cache`), so
+// measuring the same label every frame costs a hash of its bytes.
 measure_text :: proc(
 	r:    ^Renderer,
 	text: string,
@@ -540,6 +603,25 @@ measure_text :: proc(
 	// text_line_advances) — keeps text_input's caret, selection, and offset
 	// accessors aligned with the drawn glyphs. No-ops if tab-free.
 	text := expand_tabs(text)
+	key := Measure_Key{
+		hash  = hash.fnv64a(transmute([]u8)text),
+		len   = len(text),
+		size  = size,
+		font  = font,
+		scale = r.scale,
+	}
+	if entry, found := &r.text.measure_cache[key]; found {
+		entry.used = r.text.measure_frame
+		return entry.width, entry.height
+	}
+	width, line_height = measure_text_uncached(r, text, size, font)
+	r.text.measure_cache[key] = Measure_Entry{width, line_height, r.text.measure_frame}
+	return
+}
+
+// The measurement itself, by the active backend (tabs already expanded)
+@(private)
+measure_text_uncached :: proc(r: ^Renderer, text: string, size: f32, font: Font) -> (width, line_height: f32) {
 	if r.text.runa_state != nil {
 		return measure_text_runa(r, text, size, font)
 	}

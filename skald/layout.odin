@@ -134,6 +134,24 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 		// regardless of what fill-axis sentinels its children use.
 		if vv.width > 0 && vv.height > 0 { return {vv.width, vv.height} }
 
+		// Measured once a frame (Renderer.stack_size_cache), only between
+		// frame_begin and frame_end: the map is in the frame's temp memory,
+		// gone once the frame ends (the same rule as wrap_cache)
+		key: Stack_Size_Key
+		cached := r.frame_valid && len(vv.children) > 0
+		if cached {
+			key = Stack_Size_Key{
+				children  = raw_data(vv.children),
+				count     = len(vv.children),
+				direction = vv.direction,
+				spacing   = vv.spacing,
+				padding   = vv.padding,
+				width     = vv.width,
+				height    = vv.height,
+			}
+			if size, found := r.stack_size_cache[key]; found { return size }
+		}
+
 		main:  f32 = 0
 		cross: f32 = 0
 		for child, i in vv.children {
@@ -156,6 +174,7 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 		else                        { out_x, out_y = main, cross }
 		if vv.width  > 0 { out_x = vv.width  }
 		if vv.height > 0 { out_y = vv.height }
+		if cached { r.stack_size_cache[key] = {out_x, out_y} }
 		return {out_x, out_y}
 
 	case View_Wrap_Row:

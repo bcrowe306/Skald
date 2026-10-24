@@ -6,6 +6,24 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Performance
+
+- **Text measurements are cached across frames** (`Text.measure_cache`):
+  `measure_text` keys on the text's content (a hash and its length, since
+  views rebuild their strings every frame), size, font and DPI scale, so a
+  label measured every frame is a lookup instead of a paragraph layout.
+  Entries unused for 240 frames are dropped; loading a font or chaining a
+  fallback clears it. Test: `measure_cache_hits_by_content`.
+- **Stacks are measured once a frame** (`Renderer.stack_size_cache`):
+  `view_size` of a stack is kept for the rest of the frame (keyed by its
+  children slice and its sizing fields), so a stack nested n deep isn't
+  measured n times, nor its text.
+- Measured in the Crossfire Editor (its Spall profiling harness, every frame
+  drawn, 1680x1000): mean frame time 27-70% lower across its seven scenarios
+  (at rest on a scene 18.7 -> 9.7 ms, scrolling the inspector 21.2 -> 15.5,
+  the Level mode 14.6 -> 4.4); `measure_text` 3.7 -> 0.8 ms a frame at rest,
+  1383 -> 919 calls a frame.
+
 ### Added
 
 - **Profiling with Spall: `-define:SPALL=true`.** `prof_scope("name")` (and

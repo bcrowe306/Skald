@@ -185,6 +185,19 @@ Wrap_Key :: struct {
 	font:      Font,
 }
 
+// Stack_Size_Key identifies a stack within a frame for `Renderer.stack_size_cache`:
+// its children slice (its address is fixed once the view is built) and the
+// fields that change its measured size.
+Stack_Size_Key :: struct {
+	children:  rawptr,
+	count:     int,
+	direction: Stack_Direction,
+	spacing:   f32,
+	padding:   f32,
+	width:     f32,
+	height:    f32,
+}
+
 Renderer :: struct {
 	instance:         vk.Instance,
 	phys_device:      vk.PhysicalDevice,
@@ -210,6 +223,11 @@ Renderer :: struct {
 	// row (and once more by virtual_list_variable's height cache
 	// refresh). With it, the second + third calls are O(1) lookups.
 	wrap_cache:       map[Wrap_Key][]string,
+	// stack_size_cache memoises `view_size` of stacks for the current frame
+	// (temp allocated in frame_begin, like wrap_cache). Every container
+	// measures its children, so without it a stack nested n deep is
+	// measured n times a frame, and its text with it.
+	stack_size_cache: map[Stack_Size_Key][2]f32,
 	// device_cmd_pool backs the one-shot uploads used by `vk_begin_one_shot`
 	// (text atlas grows, image decode uploads, anything that needs a
 	// command buffer outside the per-frame window loop). Lives on the
@@ -491,7 +509,9 @@ frame_begin :: proc(r: ^Renderer, w: ^Window, clear: Color) -> (ok: bool) {
 	r.frame_valid      = true
 	r.overlays         = make([dynamic]Overlay_Entry, context.temp_allocator)
 	r.wrap_cache       = make(map[Wrap_Key][]string, allocator = context.temp_allocator)
+	r.stack_size_cache = make(map[Stack_Size_Key][2]f32, allocator = context.temp_allocator)
 	r.alpha_multiplier = 1
+	text_measure_cache_tick(&r.text)
 
 	batch_reset(&r.batch)
 

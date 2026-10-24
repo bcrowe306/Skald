@@ -66,6 +66,7 @@ th_setup :: proc(f: ^TH_Fixture) -> bool {
 @(private = "file")
 th_teardown :: proc(f: ^TH_Fixture) {
 	if f.r.text.runa_state != nil { text_runa_free(f.r.text.runa_state) }
+	delete(f.r.text.measure_cache)
 	batch_destroy(&f.r.batch)
 	free(f.r.cur)
 	free(f.r)
