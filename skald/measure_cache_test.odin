@@ -59,3 +59,51 @@ measure_cache_hits_by_content :: proc(t: ^testing.T) {
 	font_add_fallback(r, font_default(r), font_use_default_emoji(r))
 	testing.expect_value(t, len(r.text.measure_cache), 0)
 }
+
+// draw_text's laid-out glyphs (Text_Runa.run_cache): a string drawn again
+// draws the same glyphs from the cache; font changes clear it.
+@(test)
+draw_cache_draws_the_same_glyphs :: proc(t: ^testing.T) {
+	r := new(Renderer)
+	r.cur = new(Window_Target)
+	r.scale = 1
+	r.text.atlas_w = ATLAS_SIZE
+	r.text.atlas_h = ATLAS_SIZE
+	text_init_runa(&r.text, r)
+	defer {
+		if r.text.runa_state != nil { text_runa_free(r.text.runa_state) }
+		delete(r.text.measure_cache)
+		delete(r.batch.vertices)
+		delete(r.batch.indices)
+		delete(r.batch.ranges)
+		delete(r.batch.clip_stack)
+		free(r.cur)
+		free(r)
+	}
+	if r.text.runa_state == nil { return }
+	rs := r.text.runa_state
+
+	draw_text(r, "Position X: 120", 10, 20, Color{1, 1, 1, 1}, 14)
+	testing.expect_value(t, len(rs.run_cache), 1)
+	first := len(r.batch.vertices)
+	testing.expect(t, first > 0, "the text drew quads")
+	firstVerts := make([]Vertex, first, context.temp_allocator)
+	copy(firstVerts, r.batch.vertices[:])
+	clear(&r.batch.vertices)
+	clear(&r.batch.indices)
+
+	// From the cache (another address, the same text): the same quads
+	again := strings.clone("Position X: 120", context.temp_allocator)
+	draw_text(r, again, 10, 20, Color{1, 1, 1, 1}, 14)
+	testing.expect_value(t, len(rs.run_cache), 1)
+	testing.expect_value(t, len(r.batch.vertices), first)
+	if len(r.batch.vertices) == first {
+		for v, i in r.batch.vertices do testing.expect_value(t, v, firstVerts[i])
+	}
+
+	// Another size is another run; a font change clears them
+	draw_text(r, "Position X: 120", 10, 20, Color{1, 1, 1, 1}, 20)
+	testing.expect_value(t, len(rs.run_cache), 2)
+	font_add_fallback(r, font_default(r), font_use_default_emoji(r))
+	testing.expect_value(t, len(rs.run_cache), 0)
+}

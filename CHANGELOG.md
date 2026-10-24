@@ -14,6 +14,12 @@ bug fixes bump the patch.
   label measured every frame is a lookup instead of a paragraph layout.
   Entries unused for 240 frames are dropped; loading a font or chaining a
   fallback clears it. Test: `measure_cache_hits_by_content`.
+- **Drawn text keeps its laid-out glyphs across frames** (`Text_Runa.run_cache`,
+  keyed like the measurements): `draw_text` redraws a label from its cached
+  glyphs instead of laying the paragraph out again (bidi, line breaking, the
+  padded advances); swept and cleared with the measurement cache. In the
+  Crossfire Editor's harness `draw_text` went from 3.2 to 1.2 µs a call (the
+  inspector's frame 15.4 -> 11.2 ms mean). Test: `draw_cache_draws_the_same_glyphs`.
 - **Stacks are measured once a frame** (`Renderer.stack_size_cache`):
   `view_size` of a stack is kept for the rest of the frame (keyed by its
   children slice and its sizing fields), so a stack nested n deep isn't

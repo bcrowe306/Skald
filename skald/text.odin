@@ -144,6 +144,7 @@ text_measure_cache_tick :: proc(t: ^Text) {
 	if t.measure_frame % MEASURE_CACHE_KEEP_FRAMES != 0 { return }
 	if len(t.measure_cache) > MEASURE_CACHE_MAX {
 		clear(&t.measure_cache)
+		text_runa_run_cache_clear(t.runa_state)
 		return
 	}
 	stale := make([dynamic]Measure_Key, context.temp_allocator)
@@ -151,6 +152,7 @@ text_measure_cache_tick :: proc(t: ^Text) {
 		if t.measure_frame - entry.used >= MEASURE_CACHE_KEEP_FRAMES { append(&stale, key) }
 	}
 	for key in stale { delete_key(&t.measure_cache, key) }
+	text_runa_run_cache_sweep(t.runa_state, t.measure_frame, MEASURE_CACHE_KEEP_FRAMES, MEASURE_CACHE_MAX)
 }
 
 @(private)
@@ -456,6 +458,7 @@ font_bold_italic :: proc(r: ^Renderer) -> Font {
 // callers must keep the slice alive for the lifetime of the renderer.
 font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
 	clear(&r.text.measure_cache)
+	text_runa_run_cache_clear(r.text.runa_state)
 	if r.text.runa_state != nil {
 		return font_load_runa(r, name, data)
 	}
@@ -479,6 +482,7 @@ font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
 // other scripts bundle the TTFs they need and register them here.
 font_add_fallback :: proc(r: ^Renderer, base, fallback: Font) -> bool {
 	clear(&r.text.measure_cache)
+	text_runa_run_cache_clear(r.text.runa_state)
 	if r.text.runa_state != nil {
 		return font_add_fallback_runa(r, base, fallback)
 	}
