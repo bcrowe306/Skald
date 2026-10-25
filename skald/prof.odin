@@ -5,7 +5,6 @@ import "base:runtime"
 import "core:os"
 import "core:prof/spall"
 import "core:sync"
-import "core:time"
 
 // Profiling with Spall (https://gravitymoth.com/spall/), compiled out unless asked for.
 //
@@ -46,6 +45,10 @@ SPALL_AUTO :: #config(SPALL_AUTO, false)
 // PROF_BUFFER_SIZE is the size of each thread's buffer: a full buffer is written to the file.
 PROF_BUFFER_SIZE :: 1 << 20
 
+// Every procedure here is @(no_instrumentation) (the file tag alone left them instrumented), and
+// the ones slicing a buffer are #no_bounds_check: the runtime's bounds-check helpers are inlined
+// with SPALL_AUTO's hooks, which would call back into prof_begin forever (spall's own code says
+// so too)
 @(private="file") profCtx: spall.Context
 @(private="file") profRunning: bool
 // SPALL_CLOCK=cpu: timestamps are the thread's CPU time
@@ -67,6 +70,7 @@ Does nothing without SPALL, or when a trace is already running.
 Returns:
 - true when a trace is running afterwards
 */
+@(no_instrumentation)
 prof_start :: proc(path := "") -> bool {
 	when SPALL {
 		if profRunning { return true }
@@ -90,6 +94,7 @@ prof_start :: proc(path := "") -> bool {
 Stops the trace: every thread's buffer is written and freed, and the file closed. Threads still
 recording must have finished (workers end with `prof_thread_end`).
 */
+@(no_instrumentation)
 prof_stop :: proc() {
 	when SPALL {
 		if !profRunning { return }
@@ -110,20 +115,23 @@ prof_stop :: proc() {
 }
 
 // prof_running says whether a trace is being written.
+@(no_instrumentation)
 prof_running :: proc "contextless" () -> bool {
 	when SPALL { return profRunning } else { return false }
 }
 
 // prof_now is the trace's clock: nanoseconds of wall time, or of the thread's CPU time with SPALL_CLOCK=cpu.
+@(no_instrumentation)
 prof_now :: proc "contextless" () -> u64 {
 	if profCPUClock {
 		if ns, ok := thread_cpu_ns(); ok { return ns }
 	}
-	return u64(time.tick_now()._nsec)
+	return wall_ns()
 }
 
 // The calling thread's buffer, made the first time (nil without a running trace)
 @(private="file")
+@(no_instrumentation)
 threadBuffer :: proc "contextless" () -> ^spall.Buffer {
 	when SPALL {
 		if profBusy { return nil }
@@ -150,6 +158,7 @@ threadBuffer :: proc "contextless" () -> ^spall.Buffer {
 Writes and frees the calling thread's buffer: call it before a thread that recorded ends (Skald's
 `cmd_thread` workers do). The thread gets a new buffer if it records again.
 */
+@(no_instrumentation)
 prof_thread_end :: proc "contextless" () {
 	when SPALL {
 		b := profBuffer
@@ -169,7 +178,8 @@ prof_thread_end :: proc "contextless" () {
 }
 
 // prof_name_thread names the calling thread in the trace.
-prof_name_thread :: proc "contextless" (name: string) {
+@(no_instrumentation)
+prof_name_thread :: proc "contextless" (name: string) #no_bounds_check {
 	when SPALL {
 		if b := threadBuffer(); b != nil {
 			if b.head + spall.NAME_EVENT_MAX > len(b.data) { bufferWrite(b) }
@@ -182,7 +192,8 @@ prof_name_thread :: proc "contextless" (name: string) {
 Begins a named span on the calling thread; `prof_end` ends the innermost one. Prefer
 `prof_scope`, which ends itself.
 */
-prof_begin :: proc "contextless" (name: string, args := "") {
+@(no_instrumentation)
+prof_begin :: proc "contextless" (name: string, args := "") #no_bounds_check {
 	when SPALL {
 		if b := threadBuffer(); b != nil {
 			if b.head + spall.BEGIN_EVENT_MAX > len(b.data) { bufferWrite(b) }
@@ -192,7 +203,8 @@ prof_begin :: proc "contextless" (name: string, args := "") {
 }
 
 // prof_end ends the calling thread's innermost span.
-prof_end :: proc "contextless" () {
+@(no_instrumentation)
+prof_end :: proc "contextless" () #no_bounds_check {
 	when SPALL {
 		if b := threadBuffer(); b != nil {
 			ts := prof_now()
@@ -206,12 +218,14 @@ prof_end :: proc "contextless" () {
 A span from here to the end of the enclosing block.
 
 Example:
+	@(no_instrumentation)
 	draw_things :: proc() {
 		prof_scope("draw_things")
 		// ...
 	}
 */
 @(deferred_none = prof_end)
+@(no_instrumentation)
 prof_scope :: proc "contextless" (name: string, args := "") {
 	prof_begin(name, args)
 }
@@ -219,8 +233,13 @@ prof_scope :: proc "contextless" (name: string, args := "") {
 // Writes a buffer's events to the file and empties it (spall's buffer_flush, without the
 // wall-clock "flush" event it adds)
 @(private="file")
-bufferWrite :: proc "contextless" (b: ^spall.Buffer) {
+@(no_instrumentation)
+bufferWrite :: proc "contextless" (b: ^spall.Buffer) #no_bounds_check {
 	if len(b.data) == 0 || b.head <= size_of(spall.Manual_Buffer_Header) { return }
+	// Locking and writing run instrumented procedures (SPALL_AUTO): no recording meanwhile
+	was := profBusy
+	profBusy = true
+	defer profBusy = was
 	hdr := (^spall.Manual_Buffer_Header)(raw_data(b.data))
 	hdr.size = u32le(b.head - size_of(spall.Manual_Buffer_Header))
 	hdr.pid = u32le(b.pid)
@@ -235,6 +254,7 @@ bufferWrite :: proc "contextless" (b: ^spall.Buffer) {
 }
 
 @(private="file")
+@(no_instrumentation)
 bufferFree :: proc "contextless" (b: ^spall.Buffer) {
 	context = runtime.default_context()
 	delete(b.data, runtime.heap_allocator())
