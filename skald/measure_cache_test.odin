@@ -107,3 +107,58 @@ draw_cache_draws_the_same_glyphs :: proc(t: ^testing.T) {
 	font_add_fallback(r, font_default(r), font_use_default_emoji(r))
 	testing.expect_value(t, len(rs.run_cache), 0)
 }
+
+// wrap_text's lines across frames (Text.wrap_cache): the same text at another
+// address wraps from the cache into slices of that string, the same lines;
+// another width is another wrap; tabs aren't kept; sweeps and font changes
+// drop them.
+@(test)
+wrap_cache_hits_by_content :: proc(t: ^testing.T) {
+	r := new(Renderer)
+	r.cur = new(Window_Target)
+	r.scale = 1
+	r.text.atlas_w = ATLAS_SIZE
+	r.text.atlas_h = ATLAS_SIZE
+	text_init_runa(&r.text, r)
+	r.text.wrap_cache = make(map[Wrap_Text_Key]Wrap_Entry, 16)
+	defer {
+		if r.text.runa_state != nil { text_runa_free(r.text.runa_state) }
+		delete(r.text.measure_cache)
+		text_wrap_cache_clear(&r.text)
+		delete(r.text.wrap_cache)
+		free(r.cur)
+		free(r)
+	}
+	if r.text.runa_state == nil { return }
+
+	TEXT :: "A long tooltip that wraps over several lines\n\nwith an empty one between"
+	first := wrap_text(r, TEXT, 120, 14)
+	testing.expect(t, len(first) >= 4, "wraps onto several lines")
+	testing.expect_value(t, len(r.text.wrap_cache), 1)
+
+	copy := strings.clone(TEXT, context.temp_allocator)
+	again := wrap_text(r, copy, 120, 14)
+	testing.expect_value(t, len(r.text.wrap_cache), 1)
+	testing.expect_value(t, len(again), len(first))
+	base := uintptr(raw_data(copy))
+	for line, i in again {
+		testing.expect_value(t, line, first[i])
+		if len(line) > 0 {
+			at := uintptr(raw_data(line))
+			testing.expect(t, at >= base && at < base + uintptr(len(copy)), "a hit slices the caller's string")
+		}
+	}
+
+	wrap_text(r, TEXT, 200, 14)
+	testing.expect_value(t, len(r.text.wrap_cache), 2)
+	wrap_text(r, "a\ttabbed line that wraps somewhere", 60, 14)
+	testing.expect_value(t, len(r.text.wrap_cache), 2)
+
+	for _ in 0 ..< MEASURE_CACHE_KEEP_FRAMES - 1 { text_measure_cache_tick(&r.text) }
+	wrap_text(r, TEXT, 120, 14)
+	text_measure_cache_tick(&r.text)
+	testing.expect_value(t, len(r.text.wrap_cache), 1)
+
+	font_add_fallback(r, font_default(r), font_use_default_emoji(r))
+	testing.expect_value(t, len(r.text.wrap_cache), 0)
+}

@@ -20,6 +20,13 @@ bug fixes bump the patch.
   padded advances); swept and cleared with the measurement cache. In the
   Crossfire Editor's harness `draw_text` went from 3.2 to 1.2 µs a call (the
   inspector's frame 15.4 -> 11.2 ms mean). Test: `draw_cache_draws_the_same_glyphs`.
+- **Wrapped text keeps its lines across frames** (`Text.wrap_cache`, keyed
+  like the measurements plus the wrap width): each line is kept as a byte
+  range of the text, so `wrap_text` on the same content (a new string every
+  frame) slices it again instead of wrapping. Texts with tabs aren't kept.
+  Swept and cleared with the measurement cache. In the Crossfire Editor's
+  inspector `wrap_text` went from 3.3 to 1.0 µs a call (0.65 -> 0.19 ms a
+  frame). Test: `wrap_cache_hits_by_content`.
 - **Stacks are measured once a frame** (`Renderer.stack_size_cache`):
   `view_size` of a stack is kept for the rest of the frame (keyed by its
   children slice and its sizing fields), so a stack nested n deep isn't
