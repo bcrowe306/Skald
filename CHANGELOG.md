@@ -6,6 +6,28 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Added
+
+- **The built-in widgets set the pointer.** A hand over buttons (tabs are
+  buttons), links, checkboxes, radios, toggles, sliders, selects, date /
+  time / color triggers, collapsible and accordion headers, `clickable`
+  zones, tree rows, table rows with `on_row_click`, menu-bar triggers and
+  rows, and popup-menu rows; an I-beam over `text_input`, `number_input`,
+  `combobox` and selectable text; sideways or up-down arrows over a
+  `split`'s divider (kept while it's dragged); not-allowed over disabled
+  controls, disabled menu rows and a `drop_target` refusing a drag's kind.
+- **`Cursor_Shape` gains `Grab`, `Grabbing`, `Wait`, `Progress`.** SDL has
+  no hand cursors for grabbing, so `Grab` (open hand) and `Grabbing`
+  (closed) are drawn (`CURSOR_GRAB_ART`, `CURSOR_GRABBING_ART`, scaled by
+  the display's content scale).
+- **`cursor_request_soft`** (only when nothing asked yet this frame: for
+  containers built after their children), **`cursor_request_top`** (keeps
+  the shape for the rest of the frame: for menus and overlays built before
+  what they cover), **`cursor_for_widget(ctx, id, shape, disabled)`** (the
+  widgets' hover rule, for apps' own controls) and **`cursor_current`**.
+  Tests: `cursor_requests_soft_and_top`, `cursor_follows_the_built_in_widgets`,
+  `cursor_hand_art_is_well_formed`.
+
 ### Performance
 
 - **Text measurements are cached across frames** (`Text.measure_cache`):

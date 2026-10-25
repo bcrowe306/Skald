@@ -1139,6 +1139,7 @@ text_selectable :: proc(
 	if st.selection_anchor > n { st.selection_anchor = n }
 
 	hovered := widget_hovered(ctx, wid)
+	if hovered { cursor_request_soft(ctx, .Text) }
 
 	// Mouse press inside our rect → start selection at click position.
 	// Click streak (1/2/3+) drives the action: single = caret, double =
@@ -1448,6 +1449,7 @@ rich_text_selectable :: proc(
 	lines := wrap_rich_text(ctx.renderer, copied, resolved_size, font, max_width)
 
 	hovered := widget_hovered(ctx, wid)
+	if hovered { cursor_request_soft(ctx, .Text) }
 
 	if hovered && ctx.input.mouse_pressed[.Left] {
 		byte_pos := rich_text_hit_test(ctx.renderer, copied, lines, resolved_size, font,
@@ -1569,6 +1571,7 @@ rich_text_selectable_links :: proc(
 	lines := wrap_rich_text(ctx.renderer, copied, resolved_size, font, max_width)
 
 	hovered := widget_hovered(ctx, wid)
+	if hovered { cursor_request_soft(ctx, .Text) }
 
 	// Drag threshold for press-vs-drag-vs-link detection. Manhattan
 	// distance — well below where a deliberate drag-to-select would
@@ -3167,6 +3170,7 @@ collapsible :: proc(
 	st := widget_get(ctx, id, .Click_Zone)
 	focused := widget_has_focus(ctx, id)
 	hovered := widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer)
 
 	toggled := false
 	if ctx.input.mouse_pressed[.Left] && hovered {
@@ -3278,6 +3282,7 @@ accordion :: proc(
 		st := widget_get(ctx, zone_id, .Click_Zone)
 		focused := widget_has_focus(ctx, zone_id)
 		hovered := widget_hovered(ctx, zone_id)
+		cursor_for_widget(ctx, zone_id, .Pointer)
 
 		toggled := false
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -3806,6 +3811,7 @@ button :: proc(
 	focused := !disabled && widget_has_focus(ctx, id)
 
 	hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	if !disabled {
 		// Press/release state machine:
@@ -4156,6 +4162,7 @@ _text_input_impl :: proc(
 	// so a field that mounted this frame still takes its first click —
 	// the rect is zero, hit-test fails, we fall through.
 	hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Text, disabled)
 
 	// Search-mode embedded clear: reserve a column in the right padding
 	// for a `×` glyph. A press landing there empties the value outright
@@ -5729,6 +5736,7 @@ _checkbox_impl :: proc(
 	st := widget_get(ctx, id, .Checkbox)
 	focused := !disabled && widget_has_focus(ctx, id)
 	hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -5869,6 +5877,7 @@ _radio_impl :: proc(
 	st := widget_get(ctx, id, .Radio)
 	focused := !disabled && widget_has_focus(ctx, id)
 	hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -6087,6 +6096,7 @@ radio_group_option :: proc(
 	st := widget_get(ctx, opt_id, .Radio)
 	focused := !disabled && widget_has_focus(ctx, opt_id)
 	hovered := !disabled && widget_hovered(ctx, opt_id)
+	cursor_for_widget(ctx, opt_id, .Pointer, disabled)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -6217,6 +6227,7 @@ _toggle_impl :: proc(
 	st := widget_get(ctx, id, .Toggle)
 	focused := !disabled && widget_has_focus(ctx, id)
 	hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -6343,6 +6354,7 @@ _slider_impl :: proc(
 	st := widget_get(ctx, id, .Slider)
 	focused := !disabled && widget_has_focus(ctx, id)
 	hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	// Start a drag on press-inside; hold it regardless of hover until the
 	// button is released. Mirrors how every OS-level slider behaves so
@@ -6611,6 +6623,7 @@ _select_impl :: proc(
 
 	trigger_rect := st.last_rect
 	trigger_hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	// Predict the overlay rect so outside-click dismiss has something
 	// to hit-test. Option rows are button-sized and sit flush against
@@ -7062,6 +7075,7 @@ _combobox_impl :: proc(
 	// Popover geometry (capped at 8 rows for reasonable height).
 	trigger_rect    := st.last_rect
 	trigger_hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Text, disabled)
 
 	fs    := th.font.size_md
 	pad_x := th.spacing.md
@@ -7783,6 +7797,7 @@ _date_picker_impl :: proc(
 
 	trigger_rect := st.last_rect
 	trigger_hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	// Wall-clock today, used for the "today" highlight and as the seed
 	// month when no value / last-viewed month is set.
@@ -8515,6 +8530,7 @@ _time_picker_impl :: proc(
 
 	trigger_rect := st.last_rect
 	trigger_hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	// Popover is paginated like the date picker: one grid at a time,
 	// with `< Hour >` / `< Minute >` / `< Second >` in the header to
@@ -9034,6 +9050,7 @@ _color_picker_impl :: proc(
 
 	trigger_rect    := st.last_rect
 	trigger_hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	// Popover geometry. The SV square is square-ish (square at 220×160 here
 	// which is close enough; shortens vertical so hex+hue fit in one card).
@@ -9819,6 +9836,8 @@ clickable_lr :: proc(
 @(private)
 clickable_impl :: proc(ctx: ^Ctx($Msg), child: View, on_click: Msg, rid: Widget_ID, disabled, focusable: bool) -> View {
 	z := zone(ctx, child, rid)
+	// Soft: a text field inside a clickable row keeps its I-beam.
+	if widget_hovered(ctx, rid) { cursor_request_soft(ctx, disabled ? .Not_Allowed : .Pointer) }
 	if !disabled {
 		if focusable { widget_make_focusable(ctx, rid) }
 		if widget_clicked(ctx, rid, .Left) {
@@ -10244,6 +10263,12 @@ drop_target :: proc(
 	st := widget_get(ctx, id, .Click_Zone)
 	d  := &ctx.widgets.drag
 
+	// A drag over a target that won't take its kind: not-allowed.
+	if d.active && accepts != "" && accepts != d.payload_kind &&
+	   _point_hits_widget(ctx, id, ctx.input.mouse_pos) {
+		cursor_request_top(ctx, .Not_Allowed)
+	}
+
 	// Capture-exempt hit test: the live drag holds pointer-capture on its
 	// source, so widget_hovered would return false here — _point_hits_widget
 	// answers "what's under the release point?" ignoring the capture gate.
@@ -10638,6 +10663,11 @@ split :: proc(
 	if st.pressed && !ctx.input.mouse_buttons[.Left] {
 		st.pressed = false
 	}
+	// The divider wears a resize arrow across its axis while hovered or
+	// dragged (the drag keeps it even when the pointer outruns the bar).
+	if hover || st.pressed {
+		cursor_request(ctx, direction == .Row ? .EW_Resize : .NS_Resize)
+	}
 
 	// While dragging, compute the new first_size and emit on_resize if
 	// it actually changed. Clamp against min_first and the remaining
@@ -10928,6 +10958,7 @@ _number_input_impl :: proc(
 	// placement happens after the draft is seeded so hit-testing runs
 	// against the string that will actually render.
 	mouse_in := !non_interactive && widget_hovered(ctx, base)
+	cursor_for_widget(ctx, base, .Text, non_interactive)
 	if !non_interactive && ctx.input.mouse_pressed[.Left] {
 		if mouse_in {
 			if !focused {
@@ -11191,6 +11222,7 @@ link :: proc(
 	focused := !disabled && widget_has_focus(ctx, id)
 
 	hovered := !disabled && widget_hovered(ctx, id)
+	cursor_for_widget(ctx, id, .Pointer, disabled)
 
 	if !disabled {
 		if ctx.input.mouse_pressed[.Left] && hovered {
@@ -13244,6 +13276,7 @@ table_full :: proc(
 			row_id = widget_auto_id(ctx)
 			row_st = widget_get(ctx, row_id, .Click_Zone)
 			hovered_row = widget_hovered(ctx, row_id)
+			if hovered_row && on_row_click != nil { cursor_request_soft(ctx, .Pointer) }
 		}
 
 		// Row background layers, highest priority first:
@@ -13713,6 +13746,7 @@ menu_bar :: proc(
 		open_idx = hover_trig
 	}
 
+	if hover_trig >= 0 { cursor_request(ctx, .Pointer) }
 	if ctx.input.mouse_pressed[.Left] && hover_trig >= 0 {
 		if open_idx == hover_trig { open_idx = -1        }
 		else                      { open_idx = hover_trig }
@@ -13748,6 +13782,8 @@ menu_bar :: proc(
 	if open_idx >= 0 && rect_contains_point(dropdown_rect, mouse) {
 		if i := menu_row_at(m, active_items, dropdown_rect, mouse); i >= 0 {
 			item := active_items[i]
+			// The dropdown is built before what it covers: the top request keeps its shape.
+			if !item.separator { cursor_request_top(ctx, item.disabled ? .Not_Allowed : .Pointer) }
 			if !item.separator && !item.disabled && len(item.submenu) > 0 {
 				sub_idx = i
 			} else if !item.separator {
@@ -13792,6 +13828,7 @@ menu_bar :: proc(
 	sub_hover := -1
 	if open_idx >= 0 && sub_idx >= 0 && rect_contains_point(sub_rect, mouse) {
 		if i := menu_row_at(m, sub_items, sub_rect, mouse); i >= 0 && !sub_items[i].separator && !sub_items[i].disabled {
+			cursor_request_top(ctx, .Pointer)
 			sub_hover = i
 			if ctx.input.mouse_released[.Left] {
 				send(ctx, sub_items[i].msg)
@@ -13957,6 +13994,8 @@ popup_menu :: proc(
 	// The pointer: hovering a row with a submenu opens it, another command closes it
 	if rect_contains_point(rect, mouse) {
 		if i := menu_row_at(m, items, rect, mouse); i >= 0 && !items[i].separator {
+			// Built before what it covers: the top request keeps its shape.
+			cursor_request_top(ctx, usable(items[i]) ? .Pointer : .Not_Allowed)
 			key_row = i
 			if usable(items[i]) && len(items[i].submenu) > 0 {
 				if sub_idx != i { sub_key = -1 }
@@ -13992,6 +14031,7 @@ popup_menu :: proc(
 	sub_hover := -1
 	if over_sub {
 		if i := menu_row_at(m, sub_items, sub_rect, mouse); i >= 0 && usable(sub_items[i]) {
+			cursor_request_top(ctx, .Pointer)
 			sub_hover = i
 			sub_key = i
 		}
@@ -14374,6 +14414,10 @@ tree :: proc(
 	}
 
 	mouse := ctx.input.mouse_pos
+	// Rows are clickable: a hand over the tree's rows.
+	if widget_hovered(ctx, id) {
+		if rel := mouse.y - tree_rect.y; rel >= 0 && int(rel / rh) < len(rows) { cursor_request_soft(ctx, .Pointer) }
+	}
 
 	// Mouse: press-on-chevron toggles, press-on-body selects + focuses.
 	// Chevron has its own hit rect carved from the leading indent so a

@@ -501,6 +501,10 @@ Widget_Store :: struct {
 	// last in the render walk and gets to claim the cursor. The run
 	// loop applies it via SDL once per frame, after view has settled.
 	wants_cursor:      Cursor_Shape,
+	// cursor_locked is set by `cursor_request_top` (open menus, a live
+	// drag): later plain requests from widgets built after it, and under
+	// it, leave the shape alone for the rest of the frame.
+	cursor_locked:     bool,
 	// pointer_capture_id, when non-zero, is the widget that owns the mouse —
 	// currently a scrollbar being hovered or dragged. While set, widget_hovered
 	// returns false for every OTHER id, so content under the bar (and rows a
@@ -759,6 +763,10 @@ Cursor_Shape :: enum {
 	NWSE_Resize,    // top-left↔bottom-right corner drag
 	NESW_Resize,    // top-right↔bottom-left corner drag
 	Not_Allowed,    // operation refused — disabled drop target
+	Grab,           // open hand — something that can be grabbed and panned
+	Grabbing,       // closed hand — a pan or grab in progress
+	Wait,           // busy — the app can't take input
+	Progress,       // busy in the background — input still works
 }
 
 // cursor_request asks the run loop to display `shape` for the rest of
@@ -767,7 +775,44 @@ Cursor_Shape :: enum {
 // span, a text input, a resize handle. Last call in the view walk
 // wins so overlay widgets correctly override widgets underneath.
 cursor_request :: proc(ctx: ^Ctx($Msg), shape: Cursor_Shape) {
+	if ctx.widgets.cursor_locked { return }
 	ctx.widgets.wants_cursor = shape
+}
+
+// cursor_request_top asks for `shape` and keeps it for the rest of the
+// frame: requests after it are ignored. For things drawn over everything
+// but built early in the view (a popup menu, a menu bar's open dropdown,
+// a drag in progress), which would otherwise lose to the widgets built
+// after them.
+cursor_request_top :: proc(ctx: ^Ctx($Msg), shape: Cursor_Shape) {
+	if ctx.widgets.cursor_locked { return }
+	ctx.widgets.wants_cursor  = shape
+	ctx.widgets.cursor_locked = true
+}
+
+// cursor_request_soft asks for `shape` only when nothing has asked for a
+// shape yet this frame. Container widgets (`clickable`, `zone`, rows) are
+// built after their children, so a plain `cursor_request` there would
+// override a text input's I-beam inside a clickable row; the soft call
+// lets the inner widget win.
+cursor_request_soft :: proc(ctx: ^Ctx($Msg), shape: Cursor_Shape) {
+	if ctx.widgets.cursor_locked { return }
+	if ctx.widgets.wants_cursor == .Default { ctx.widgets.wants_cursor = shape }
+}
+
+// cursor_current is the shape requested so far this frame (Default when
+// none). The run loop shows the last request once the view is built.
+cursor_current :: proc(ctx: ^Ctx($Msg)) -> Cursor_Shape {
+	return ctx.widgets.wants_cursor
+}
+
+// cursor_for_widget is the built-in widgets' hover cursor: `shape` while
+// the pointer is over widget `id` (z-aware, like `widget_hovered`), or
+// Not_Allowed when the widget is `disabled`. Apps building their own
+// controls from `zone` / `canvas` call it the same way.
+cursor_for_widget :: proc(ctx: ^Ctx($Msg), id: Widget_ID, shape: Cursor_Shape, disabled := false) {
+	if !widget_hovered(ctx, id) { return }
+	cursor_request(ctx, disabled ? .Not_Allowed : shape)
 }
 
 widget_store_frame_reset :: proc(ws: ^Widget_Store) {
@@ -775,6 +820,7 @@ widget_store_frame_reset :: proc(ws: ^Widget_Store) {
 	ws.auto_id_scope          = 0
 	ws.wants_text_input       = false
 	ws.wants_cursor           = .Default
+	ws.cursor_locked          = false
 	ws.next_frame_deadline_ns = 0
 	ws.frame                 += 1
 	// The drag ghost is per-frame: the active source re-supplies it during view.

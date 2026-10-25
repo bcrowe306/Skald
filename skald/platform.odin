@@ -937,13 +937,101 @@ cursor_apply_shape :: proc(shape: Cursor_Shape) {
 		case .NWSE_Resize: sys = .NWSE_RESIZE
 		case .NESW_Resize: sys = .NESW_RESIZE
 		case .Not_Allowed: sys = .NOT_ALLOWED
+		case .Wait:        sys = .WAIT
+		case .Progress:    sys = .PROGRESS
 		case:              sys = .DEFAULT
 		}
-		g_cursors[shape] = sdl3.CreateSystemCursor(sys)
+		// SDL has no hand cursors for grabbing: those are drawn here.
+		if art, drawn := cursor_bitmap(shape); drawn {
+			g_cursors[shape] = cursor_from_bitmap(art)
+		}
+		if g_cursors[shape] == nil {
+			g_cursors[shape] = sdl3.CreateSystemCursor(sys)
+		}
 	}
 	if g_cursors[shape] != nil {
 		_ = sdl3.SetCursor(g_cursors[shape])
 	}
+}
+
+// CURSOR_GRAB_ART and CURSOR_GRABBING_ART are the open and closed hand
+// cursors SDL's system set lacks, 16 x 16: '#' outline, '.' fill, ' '
+// clear. The hot spot is the middle. `cursor_from_bitmap` scales them by
+// the display's content scale.
+CURSOR_GRAB_ART :: [16]string{
+	"       ##       ",
+	"   ## #..###    ",
+	"  #..##..#..#   ",
+	"  #..##..#..# # ",
+	"   #..#..#..##.#",
+	"   #..#..#..#..#",
+	" ## #.......#..#",
+	"#..##..........#",
+	"#...#.........# ",
+	" #............# ",
+	"  #...........# ",
+	"  #..........#  ",
+	"   #.........#  ",
+	"    #.......#   ",
+	"     #......#   ",
+	"     #......#   ",
+}
+
+// CURSOR_GRABBING_ART is the closed hand (see CURSOR_GRAB_ART).
+CURSOR_GRABBING_ART :: [16]string{
+	"                ",
+	"                ",
+	"                ",
+	"                ",
+	"    ## ## ##    ",
+	"   #..#..#..##  ",
+	"   #........#.# ",
+	"    #.........# ",
+	"   ##.........# ",
+	"  #...........# ",
+	"  #...........# ",
+	"   #.........#  ",
+	"    #........#  ",
+	"     #......#   ",
+	"     #......#   ",
+	"                ",
+}
+
+// cursor_bitmap is the drawn picture of a shape SDL has no system cursor
+// for (Grab, Grabbing); `drawn` is false for every other shape.
+cursor_bitmap :: proc(shape: Cursor_Shape) -> (art: [16]string, drawn: bool) {
+	#partial switch shape {
+	case .Grab:     return CURSOR_GRAB_ART, true
+	case .Grabbing: return CURSOR_GRABBING_ART, true
+	}
+	return {}, false
+}
+
+// cursor_from_bitmap makes an SDL color cursor from 16 x 16 art, scaled by
+// the primary display's content scale (rounded, at least 1). Nil when SDL
+// can't make one (the caller falls back to a system cursor).
+@(private)
+cursor_from_bitmap :: proc(art: [16]string) -> ^sdl3.Cursor {
+	scale := int(sdl3.GetDisplayContentScale(sdl3.GetPrimaryDisplay()) + 0.5)
+	if scale < 1 { scale = 1 }
+	n := 16 * scale
+	surface := sdl3.CreateSurface(i32(n), i32(n), .RGBA32)
+	if surface == nil { return nil }
+	defer sdl3.DestroySurface(surface)
+	pixels := ([^]u8)(surface.pixels)
+	for y in 0 ..< n {
+		row := art[y / scale]
+		for x in 0 ..< n {
+			c: [4]u8
+			switch row[x / scale] {
+			case '#': c = {0, 0, 0, 255}
+			case '.': c = {255, 255, 255, 255}
+			}
+			o := y * int(surface.pitch) + x * 4
+			pixels[o], pixels[o+1], pixels[o+2], pixels[o+3] = c[0], c[1], c[2], c[3]
+		}
+	}
+	return sdl3.CreateColorCursor(surface, i32(n / 2), i32(n / 2))
 }
 
 // clipboard_set writes `text` to the system clipboard. UTF-8 in, UTF-8 out.

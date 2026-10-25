@@ -1626,6 +1626,29 @@ needed.
 
 ---
 
+## Pointer shapes
+
+The built-in widgets set the pointer themselves: a hand over buttons, links,
+rows and menus, an I-beam over text fields, resize arrows over a `split`'s
+divider, not-allowed over disabled controls. Your own controls ask the same
+way, during `view`:
+
+```odin
+// A control built from a zone: a hand while hovered, not-allowed when off.
+skald.cursor_for_widget(ctx, id, .Pointer, disabled = !enabled)
+
+// A canvas tool: a crosshair over the canvas.
+skald.canvas(ctx, &state, draw, id = id, cursor = .Crosshair)
+
+// Panning: an open hand, closed while dragging.
+skald.cursor_request(ctx, panning ? .Grabbing : .Grab)
+```
+
+The last request in a frame wins. `cursor_request_soft` only asks when
+nothing has yet (a row built after the text field inside it keeps the
+I-beam); `cursor_request_top` keeps its shape for the rest of the frame (a
+menu built before what it covers).
+
 ## More
 
 Look in `examples/` for bigger patterns
