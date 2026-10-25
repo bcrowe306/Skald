@@ -1863,8 +1863,8 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 			opacity       = 1,
 		})
 		// The card takes the pointer: widgets under it don't hover or click
-		// (the same z-gate an open popover has)
-		if r.widgets != nil { widget_stamp_overlay_rect(r.widgets, Rect{x, y, cw, ch}) }
+		// (the same z-gate an open popover has), unless it passes it through
+		if r.widgets != nil && !vv.pass_through { widget_stamp_overlay_rect(r.widgets, Rect{x, y, cw, ch}) }
 
 	case View_Deferred:
 		// The parent stack has already sized us via flex / stretch /

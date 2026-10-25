@@ -878,6 +878,9 @@ View_Toast :: struct {
 	child:   ^View,
 	anchor:  Toast_Anchor,
 	margin:  f32, // distance from the framebuffer edge(s)
+	// The card leaves the pointer to what's under it (a passive notice
+	// with no buttons). Otherwise it takes it, as an open popover does.
+	pass_through: bool,
 }
 
 // View_Deferred is a layout node whose content is built *after* its
