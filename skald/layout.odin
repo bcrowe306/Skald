@@ -2095,6 +2095,21 @@ wrap_row_render :: proc(r: ^Renderer, w: View_Wrap_Row, origin: [2]f32, size: [2
 }
 
 @(private)
+// CULL_MARGIN is how far outside the active clip a child may lie and still be drawn (its
+// shadow or focus ring may reach in).
+CULL_MARGIN :: f32(32)
+
+// child_culled says whether a child's rect lies wholly outside the active clip (by more than
+// CULL_MARGIN), so rendering it would draw nothing visible. No clip active: never culled.
+@(private)
+child_culled :: proc(r: ^Renderer, rect: Rect) -> bool {
+	n := len(r.batch.clip_stack)
+	if n == 0 { return false }
+	c := r.batch.clip_stack[n - 1]
+	return rect.y + rect.h < c.y - CULL_MARGIN || rect.y > c.y + c.h + CULL_MARGIN ||
+		rect.x + rect.w < c.x - CULL_MARGIN || rect.x > c.x + c.w + CULL_MARGIN
+}
+
 stack_render :: proc(r: ^Renderer, s: View_Stack, origin: [2]f32, size: [2]f32) {
 	// Soft drop shadow behind the box. Drawn first so the bg fill sits on top,
 	// and `draw_shadow` extends the quad outside the rect — no clip is active
@@ -2245,7 +2260,15 @@ stack_render :: proc(r: ^Renderer, s: View_Stack, origin: [2]f32, size: [2]f32) 
 		if s.direction == .Column { child_origin.x += cross_offset }
 		else                      { child_origin.y += cross_offset }
 
+		// Culling: a child wholly outside the active clip (a row scrolled out of its scroll's
+		// viewport) would draw nothing anyone sees, so it's laid out with drawing suppressed
+		// (`Renderer.draw_suppressed`): its widgets still get their rects (scrolling to the focused
+		// field, revealing a tab, hit tests' clip checks all read them), but no rects, glyphs or
+		// images reach the batch. CULL_MARGIN keeps children whose shadows or focus rings reach in.
+		culled := child_culled(r, Rect{child_origin.x, child_origin.y, sizes[i].x, sizes[i].y})
+		if culled { r.draw_suppressed += 1 }
 		render_view(r, child, child_origin, sizes[i])
+		if culled { r.draw_suppressed -= 1 }
 
 		step := s.direction == .Column ? sizes[i].y : sizes[i].x
 		if s.direction == .Column { cursor.y += step } else { cursor.x += step }

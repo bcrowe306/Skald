@@ -134,6 +134,12 @@ Widget_State :: struct {
 	// enough — two Selects reshuffling into each other's slots would
 	// otherwise swap open state and hit-test rects silently.
 	last_frame:  u64,
+	// last_drawn_frame is the frame in which `widget_record_rect` last gave the widget a rect
+	// (it was laid out; rows culled outside a scroll's viewport are laid out too, only not
+	// drawn). Hit tests ignore a widget not laid out last frame: its last_rect is stale (a
+	// closed dialog's button, a branch no longer rendered) and may sit where another widget is
+	// drawn now. Zero (never stamped: states built by hand in tests) is exempt.
+	last_drawn_frame: u64,
 	pressed:     bool,
 	cursor_pos:  int,
 	// selection_anchor is the other end of a text selection range.
@@ -1149,6 +1155,7 @@ widget_record_rect :: proc(r: ^Renderer, id: Widget_ID, rect: Rect) {
 	if ws == nil { return }
 	st := ws.states[id]
 	st.last_rect = rect
+	st.last_drawn_frame = ws.frame
 	// Record the scissor active right now — the top of the clip stack
 	// already holds the running intersection of every enclosing push_clip.
 	// Zero when nothing is pushed, which widget_hovered reads as
@@ -1166,6 +1173,28 @@ widget_record_rect :: proc(r: ^Renderer, id: Widget_ID, rect: Rect) {
 		st.last_overlay_frame = ws.frame
 	}
 	ws.states[id] = st
+}
+
+/*
+Whether a widget was laid out last frame (given its rect by `widget_record_rect`), so its
+last_rect and clip_rect are current. Not the same as being built: a widget built but not
+rendered (a view built and dropped) keeps the rect from when it was last laid out. Rows culled
+outside a scroll's viewport count: they're laid out with drawing suppressed. Use it before
+trusting a widget's rect from the previous frame. A widget never stamped (its geometry kept
+another way) counts when it was built last frame.
+
+Inputs:
+- ws: The widget store
+- st: The widget's state
+
+Returns:
+- true when its rect is last frame's
+*/
+widget_drawn_last_frame :: proc(ws: ^Widget_Store, st: Widget_State) -> bool {
+	// Widgets that keep their geometry without widget_record_rect (rich text's link rects) are
+	// never stamped: built last frame is the best there is for them
+	if st.last_drawn_frame == 0 { return st.last_frame + 1 >= ws.frame }
+	return st.last_drawn_frame + 1 >= ws.frame
 }
 
 // rect_contains_point returns true if `p` lies inside `r` (inclusive on
@@ -1284,6 +1313,8 @@ widget_hovered :: proc(ctx: ^Ctx($Msg), id: Widget_ID) -> bool {
 _point_hits_widget :: proc(ctx: ^Ctx($Msg), id: Widget_ID, pt: [2]f32) -> bool {
 	st, ok := ctx.widgets.states[id]
 	if !ok { return false }
+	// Not laid out last frame: its rect is stale (no longer rendered)
+	if st.last_drawn_frame != 0 && st.last_drawn_frame + 1 < ctx.widgets.frame { return false }
 	if !rect_contains_point(st.last_rect, pt) { return false }
 	// Reject the hit when the point is outside the scissor the widget rendered
 	// under: a widget scrolled out of its container's viewport keeps a full

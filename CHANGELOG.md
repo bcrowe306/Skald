@@ -24,6 +24,15 @@ bug fixes bump the patch.
   `view_size` of a stack is kept for the rest of the frame (keyed by its
   children slice and its sizing fields), so a stack nested n deep isn't
   measured n times, nor its text.
+- **Rows outside a scroll's view aren't drawn** (`stack_render`): a stack's
+  child wholly outside the active clip (plus `CULL_MARGIN`, 32 px) is laid out
+  with drawing suppressed (`Renderer.draw_suppressed`: every draw call returns
+  at once), so a long list puts only what's in view into the batch. It is
+  still laid out, so its widgets keep their rects for scroll-into-view and
+  reveal code. In the Crossfire Editor's harness (CPU clock, ABBA against the
+  build before it) the mean frame dropped 5-17% across its seven scenarios
+  (the console 6.2 -> 5.2 ms, the code editor 5.9 -> 5.1, the inspector
+  9.0 -> 8.2). Test: `culled_rows_draw_nothing_but_keep_their_rects`.
 - `00_gallery`, headless on an Intel UHD 620 laptop: a frame's work 14.5 ->
   1.7 ms with the three caches (`measure_text` 2970 -> 519 calls a frame).
 - Measured in the Crossfire Editor (its Spall profiling harness, every frame
@@ -33,6 +42,12 @@ bug fixes bump the patch.
   1383 -> 919 calls a frame.
 
 ### Added
+
+- **`widget_drawn_last_frame(ws, st)`** and `Widget_State.last_drawn_frame`:
+  whether a widget was laid out (its rect recorded) last frame, not only
+  built (rows culled outside a scroll count: they are laid out, not drawn).
+  Hit tests use it: a widget built but not laid out (a closed dialog's
+  content, a branch skipped) no longer takes clicks at its old rect.
 
 - **Profiling with Spall: `-define:SPALL=true`.** `prof_scope("name")` (and
   `prof_begin` / `prof_end`) record spans into a `.spall` trace

@@ -544,6 +544,7 @@ draw_text :: proc(
 	size:  f32 = 14,
 	font:  Font = 0,
 ) {
+	if r.draw_suppressed > 0 { return }
 	prof_scope("draw_text")
 	// Expand tabs so the editable text_input (which shapes its raw buffer)
 	// draws `\t` as whitespace, not missing-glyph tofu. No-ops if tab-free.

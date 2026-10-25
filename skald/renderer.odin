@@ -228,6 +228,10 @@ Renderer :: struct {
 	// measures its children, so without it a stack nested n deep is
 	// measured n times a frame, and its text with it.
 	stack_size_cache: map[Stack_Size_Key][2]f32,
+	// draw_suppressed > 0 while a culled child (outside the active clip: stack_render) is laid
+	// out: the draw procedures return at once, so nothing reaches the batch, while layout and
+	// widget rects go on as usual
+	draw_suppressed: int,
 	// device_cmd_pool backs the one-shot uploads used by `vk_begin_one_shot`
 	// (text atlas grows, image decode uploads, anything that needs a
 	// command buffer outside the per-frame window loop). Lives on the
