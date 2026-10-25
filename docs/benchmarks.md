@@ -174,9 +174,16 @@ on the display.
 - **Threads:** each thread records into its own buffer, made the first time it
   records and written when full, when the thread ends (`prof_thread_end`;
   `cmd_thread` calls it) or when the trace stops.
-- **Another library in the same trace:** hand it `prof_context()` and
-  `prof_thread_buffer` (the Crossfire engine's `Trace_Share`), so one thread's
-  events from both nest in one buffer.
+- **Another library in the same trace:** it calls `prof_begin` / `prof_end`
+  (the Crossfire engine's `Trace_Share` takes them), so one thread's events from
+  both nest in one buffer, on one clock.
+- **The clock:** wall time by default. `SPALL_CLOCK=cpu` stamps each event with
+  its thread's CPU time instead (POSIX's thread CPU clock; wall time on
+  Windows): time the thread was descheduled, sleeping or waiting on the GPU
+  isn't counted, so a change to CPU work can be compared while other programs
+  load the machine. Each thread then has its own timeline. Skald writes the
+  events and buffers itself, since spall's own flush stamps a wall-clock
+  event.
 - **Every procedure:** `-define:SPALL_AUTO=true` (with SPALL) records every
   procedure that isn't `@(no_instrumentation)` through Odin's
   `@(instrumentation_enter)` / `@(instrumentation_exit)` hooks, which Skald

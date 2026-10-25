@@ -5,6 +5,7 @@ import "base:runtime"
 import "core:os"
 import "core:prof/spall"
 import "core:sync"
+import "core:time"
 
 // Profiling with Spall (https://gravitymoth.com/spall/), compiled out unless asked for.
 //
@@ -18,12 +19,18 @@ import "core:sync"
 //   - `skald.run` starts one when none is running (`prof_start`), named by the `SPALL_TRACE`
 //     environment variable (default `trace.spall` in the working folder), and stops it when the
 //     loop ends. An app can start it earlier itself, and stop it later (before `os.exit`).
+//   - **The clock:** wall time by default (how long things took, waits included). With
+//     `SPALL_CLOCK=cpu` each thread's own CPU time instead (POSIX's thread CPU clock; wall time
+//     on Windows): time the thread spent descheduled, waiting on the GPU or sleeping isn't
+//     counted, so CPU work can be compared while other programs load the machine. Each thread's
+//     timeline is then its own.
 //   - Each thread writes into its own buffer, made the first time it records something and
 //     flushed when it's full, when the thread ends (`prof_thread_end`: `cmd_thread`'s workers
-//     call it) or when the trace stops.
-//   - Another library can record into the same trace and the same per-thread buffers: hand it
-//     `prof_context()` and `prof_thread_buffer` (the Crossfire engine's `Prof_Share`), so one
-//     thread's events from both nest correctly.
+//     call it) or when the trace stops. Skald writes the events and the buffers itself (not
+//     through spall's buffer procedures, whose flush stamps a wall-clock event).
+//   - Another library records into the same trace by calling `prof_begin` / `prof_end` (the
+//     Crossfire engine's `Trace_Share` takes them), so one thread's events from both nest, on
+//     one clock.
 //
 // Scopes in the frame loop (app.odin): `frame` (one rendered frame: view, layout and draw,
 // overlays, GPU submit, update), inside it `view`, `render_view`, `render_overlays`,
@@ -41,16 +48,21 @@ PROF_BUFFER_SIZE :: 1 << 20
 
 @(private="file") profCtx: spall.Context
 @(private="file") profRunning: bool
+// SPALL_CLOCK=cpu: timestamps are the thread's CPU time
+@(private="file") profCPUClock: bool
 @(private="file") profLock: sync.Mutex
+// Held while a buffer is written to the file (threads flush on their own)
+@(private="file") profWriteLock: sync.Mutex
 @(private="file") profBuffers: [dynamic]^spall.Buffer
 @(private="file") @(thread_local) profBuffer: ^spall.Buffer
-// Set while a thread makes its buffer: allocating runs instrumented procedures (SPALL_AUTO),
-// which would ask for the buffer again.
+// Set while a thread makes or frees its buffer: allocating runs instrumented procedures
+// (SPALL_AUTO), which would ask for the buffer again or write into one being freed.
 @(private="file") @(thread_local) profBusy: bool
 
 /*
 Starts the trace, writing to `path` (the `SPALL_TRACE` environment variable when empty, else
-`trace.spall`). Does nothing without SPALL, or when a trace is already running.
+`trace.spall`), on the clock `SPALL_CLOCK` names (`cpu`: each thread's CPU time; else wall time).
+Does nothing without SPALL, or when a trace is already running.
 
 Returns:
 - true when a trace is running afterwards
@@ -61,10 +73,11 @@ prof_start :: proc(path := "") -> bool {
 		file := path
 		if file == "" { file = os.get_env("SPALL_TRACE", context.temp_allocator) }
 		if file == "" { file = "trace.spall" }
-		// Ticks in nanoseconds (scale 1): no two-second clock calibration at startup
+		// Timestamps in nanoseconds (scale 1): no two-second clock calibration at startup
 		ctx, ok := spall.context_create_with_scale(file, false, 1)
 		if !ok { return false }
 		profCtx = ctx
+		profCPUClock = os.get_env("SPALL_CLOCK", context.temp_allocator) == "cpu"
 		profRunning = true
 		prof_name_thread("main")
 		return true
@@ -80,13 +93,12 @@ recording must have finished (workers end with `prof_thread_end`).
 prof_stop :: proc() {
 	when SPALL {
 		if !profRunning { return }
-		// No recording while the buffers go (freeing runs instrumented procedures)
 		profBusy = true
 		defer profBusy = false
 		profBuffer = nil
 		sync.lock(&profLock)
 		for b in profBuffers {
-			spall.buffer_destroy(&profCtx, b)
+			bufferWrite(b)
 			bufferFree(b)
 		}
 		delete(profBuffers)
@@ -102,31 +114,28 @@ prof_running :: proc "contextless" () -> bool {
 	when SPALL { return profRunning } else { return false }
 }
 
-// prof_context is the running trace (nil without one), for a library recording into it.
-prof_context :: proc "contextless" () -> ^spall.Context {
-	when SPALL {
-		return &profCtx if profRunning else nil
-	} else {
-		return nil
+// prof_now is the trace's clock: nanoseconds of wall time, or of the thread's CPU time with SPALL_CLOCK=cpu.
+prof_now :: proc "contextless" () -> u64 {
+	if profCPUClock {
+		if ns, ok := thread_cpu_ns(); ok { return ns }
 	}
+	return u64(time.tick_now()._nsec)
 }
 
-/*
-The calling thread's buffer, made the first time (nil without a running trace). Other libraries
-recording into the trace take this procedure, so a thread has one buffer for all of them.
-*/
-prof_thread_buffer :: proc "contextless" () -> ^spall.Buffer {
+// The calling thread's buffer, made the first time (nil without a running trace)
+@(private="file")
+threadBuffer :: proc "contextless" () -> ^spall.Buffer {
 	when SPALL {
 		if profBusy { return nil }
 		if profBuffer != nil || !profRunning { return profBuffer }
 		profBusy = true
 		defer profBusy = false
 		context = runtime.default_context()
-		size := PROF_BUFFER_SIZE
-		data, err := make([]u8, size, runtime.heap_allocator())
+		data, err := make([]u8, PROF_BUFFER_SIZE, runtime.heap_allocator())
 		if err != nil { return nil }
 		b := new(spall.Buffer, runtime.heap_allocator())
 		b^ = spall.buffer_create(data, u32(sync.current_thread_id()), u32(os.get_pid()))
+		b.first_ts = prof_now()
 		sync.lock(&profLock)
 		append(&profBuffers, b)
 		sync.unlock(&profLock)
@@ -154,7 +163,7 @@ prof_thread_end :: proc "contextless" () {
 			if x == b { unordered_remove(&profBuffers, i); break }
 		}
 		sync.unlock(&profLock)
-		if profRunning { spall.buffer_destroy(&profCtx, b) }
+		if profRunning { bufferWrite(b) }
 		bufferFree(b)
 	}
 }
@@ -162,8 +171,9 @@ prof_thread_end :: proc "contextless" () {
 // prof_name_thread names the calling thread in the trace.
 prof_name_thread :: proc "contextless" (name: string) {
 	when SPALL {
-		if b := prof_thread_buffer(); b != nil {
-			spall._buffer_name_thread(&profCtx, b, name)
+		if b := threadBuffer(); b != nil {
+			if b.head + spall.NAME_EVENT_MAX > len(b.data) { bufferWrite(b) }
+			b.head += spall._build_name_event(b.data[b.head:], name, .Name_Thread)
 		}
 	}
 }
@@ -174,8 +184,9 @@ Begins a named span on the calling thread; `prof_end` ends the innermost one. Pr
 */
 prof_begin :: proc "contextless" (name: string, args := "") {
 	when SPALL {
-		if b := prof_thread_buffer(); b != nil {
-			spall._buffer_begin(&profCtx, b, name, args)
+		if b := threadBuffer(); b != nil {
+			if b.head + spall.BEGIN_EVENT_MAX > len(b.data) { bufferWrite(b) }
+			b.head += spall._build_begin(b.data[b.head:], name, args, prof_now())
 		}
 	}
 }
@@ -183,8 +194,10 @@ prof_begin :: proc "contextless" (name: string, args := "") {
 // prof_end ends the calling thread's innermost span.
 prof_end :: proc "contextless" () {
 	when SPALL {
-		if b := prof_thread_buffer(); b != nil {
-			spall._buffer_end(&profCtx, b)
+		if b := threadBuffer(); b != nil {
+			ts := prof_now()
+			if b.head + size_of(spall.End_Event) > len(b.data) { bufferWrite(b) }
+			b.head += spall._build_end(b.data[b.head:], ts)
 		}
 	}
 }
@@ -203,6 +216,24 @@ prof_scope :: proc "contextless" (name: string, args := "") {
 	prof_begin(name, args)
 }
 
+// Writes a buffer's events to the file and empties it (spall's buffer_flush, without the
+// wall-clock "flush" event it adds)
+@(private="file")
+bufferWrite :: proc "contextless" (b: ^spall.Buffer) {
+	if len(b.data) == 0 || b.head <= size_of(spall.Manual_Buffer_Header) { return }
+	hdr := (^spall.Manual_Buffer_Header)(raw_data(b.data))
+	hdr.size = u32le(b.head - size_of(spall.Manual_Buffer_Header))
+	hdr.pid = u32le(b.pid)
+	hdr.tid = u32le(b.tid)
+	hdr.first_ts = u64le(b.first_ts)
+	context = runtime.default_context()
+	sync.lock(&profWriteLock)
+	_, _ = os.write(profCtx.file, b.data[:b.head])
+	sync.unlock(&profWriteLock)
+	b.head = size_of(spall.Manual_Buffer_Header)
+	b.first_ts = prof_now()
+}
+
 @(private="file")
 bufferFree :: proc "contextless" (b: ^spall.Buffer) {
 	context = runtime.default_context()
@@ -215,15 +246,11 @@ when SPALL && SPALL_AUTO {
 	// around each procedure without @(no_instrumentation) or a #+no-instrumentation file)
 	@(instrumentation_enter)
 	prof_auto_enter :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
-		if b := prof_thread_buffer(); b != nil {
-			spall._buffer_begin(&profCtx, b, "", "", loc)
-		}
+		prof_begin(loc.procedure)
 	}
 
 	@(instrumentation_exit)
 	prof_auto_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
-		if b := prof_thread_buffer(); b != nil {
-			spall._buffer_end(&profCtx, b)
-		}
+		prof_end()
 	}
 }

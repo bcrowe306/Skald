@@ -24,6 +24,8 @@ bug fixes bump the patch.
   `view_size` of a stack is kept for the rest of the frame (keyed by its
   children slice and its sizing fields), so a stack nested n deep isn't
   measured n times, nor its text.
+- `00_gallery`, headless on an Intel UHD 620 laptop: a frame's work 14.5 ->
+  1.7 ms with the three caches (`measure_text` 2970 -> 519 calls a frame).
 - Measured in the Crossfire Editor (its Spall profiling harness, every frame
   drawn, 1680x1000): mean frame time 27-70% lower across its seven scenarios
   (at rest on a scene 18.7 -> 9.7 ms, scrolling the inspector 21.2 -> 15.5,
@@ -41,10 +43,13 @@ bug fixes bump the patch.
   `frame_end`, `update`), `events`, `idle` and `pace`, and text has
   `measure_text`, `draw_text`, `wrap_text`. Each thread records into its own
   buffer (`cmd_thread` workers write theirs before the pool counts them done);
-  another library joins the trace with `prof_context` and
-  `prof_thread_buffer`. `-define:SPALL_AUTO=true` also records every procedure
-  through Odin's instrumentation hooks. See docs/benchmarks.md, "Profiling
-  with Spall".
+  another library joins the trace by calling `prof_begin` / `prof_end`.
+  `SPALL_CLOCK=cpu` stamps events with each thread's CPU time instead of wall
+  time (`prof_now`: POSIX's thread CPU clock, wall time on Windows), which
+  leaves out time the thread was descheduled, so CPU work compares on a busy
+  machine. `-define:SPALL_AUTO=true` also records every procedure through
+  Odin's instrumentation hooks. See docs/benchmarks.md, "Profiling with
+  Spall".
 - **Choosing several files: `cmd_open_file_dialog(..., allow_many = true)`.**
   Every file chosen arrives in `File_Dialog_Result.paths` (the handler frees
   the slice and its strings; `path` is the first of them). Without it nothing
