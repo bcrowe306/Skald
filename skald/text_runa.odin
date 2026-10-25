@@ -1,6 +1,7 @@
 package skald
 
 import "core:fmt"
+import "core:hash"
 import "core:math"
 import "core:mem"
 import vk "vendor:vulkan"
@@ -26,6 +27,12 @@ import runa "third_party/runa"
 // text work, it must own its own `Cache` and never touch this one.
 @(private)
 Text_Runa :: struct {
+	// run_cache keeps each drawn string's laid-out glyphs across frames
+	// (keyed like Text.measure_cache), so `draw_text_runa` redraws a label
+	// without laying its paragraph out again (bidi, line breaking, the
+	// glyphs' padded advances). Swept with the measurement cache
+	// (`text_runa_run_cache_sweep`), cleared with it by font changes.
+	run_cache: map[Measure_Key]Runa_Run,
 	cache: runa.Cache,
 	atlas: runa.Atlas,
 	// Heap-allocated runa.Font values, indexed by skald.Font (cast to
@@ -129,6 +136,7 @@ text_init_runa :: proc(t: ^Text, r: ^Renderer) -> bool {
 	rs.fonts          = make([dynamic]^runa.Font, 0, 4)
 	rs.fallback_chain = make([dynamic]int, 0, 4)
 	rs.glyph_cache    = make(map[Glyph_Key]runa.Atlas_Slot, 256)
+	rs.run_cache      = make(map[Measure_Key]Runa_Run, 256)
 	rs.stack_buf      = make([dynamic]^runa.Font, 1, 5)
 
 	// Lock the embedded-Inter font indices to the same values fontstash
@@ -163,8 +171,55 @@ text_destroy_runa :: proc(t: ^Text, r: ^Renderer) {
 	t.runa_state = nil
 }
 
+// Runa_Run is a string laid out for drawing: its glyphs in order, and the
+// frame it was last drawn in (Text.measure_frame)
+@(private)
+Runa_Run :: struct {
+	glyphs: []Runa_Run_Glyph,
+	used:   u64,
+}
+
+// One glyph of a Runa_Run, its advance already padded (text_runa_glyph_advance)
+@(private)
+Runa_Run_Glyph :: struct {
+	font:      ^runa.Font,
+	gid:       u16,
+	x_advance: f32,
+	y_advance: f32,
+	x_offset:  f32,
+	y_offset:  f32,
+}
+
+// text_runa_run_cache_clear frees every cached run (font changes, teardown)
+@(private)
+text_runa_run_cache_clear :: proc(rs: ^Text_Runa) {
+	if rs == nil { return }
+	for _, run in rs.run_cache { delete(run.glyphs) }
+	clear(&rs.run_cache)
+}
+
+// text_runa_run_cache_sweep drops runs not drawn in the last keep frames
+@(private)
+text_runa_run_cache_sweep :: proc(rs: ^Text_Runa, frame: u64, keep: u64, max_entries: int) {
+	if rs == nil { return }
+	if len(rs.run_cache) > max_entries {
+		text_runa_run_cache_clear(rs)
+		return
+	}
+	stale := make([dynamic]Measure_Key, context.temp_allocator)
+	for key, run in rs.run_cache {
+		if frame - run.used >= keep { append(&stale, key) }
+	}
+	for key in stale {
+		delete(rs.run_cache[key].glyphs)
+		delete_key(&rs.run_cache, key)
+	}
+}
+
 @(private)
 text_runa_free :: proc(rs: ^Text_Runa) {
+	text_runa_run_cache_clear(rs)
+	delete(rs.run_cache)
 	delete(rs.glyph_cache)
 	delete(rs.fallback_chain)
 	delete(rs.stack_buf)
@@ -482,27 +537,54 @@ draw_text_runa :: proc(
 	inv := 1 / scale
 	px_size := text_runa_px_size(rs.fonts[int(f)], size * scale)
 
-	stack := text_runa_stack(rs, f)
-	opts := runa.Paragraph_Opts{fonts = stack, size = px_size}
-
-	// `runa.layout_paragraph` threads the cache through to
-	// `shape_text_cached` when a non-nil ^Cache is passed (runa 0.2+),
-	// so per-frame redraws of static text hit the shape cache and
-	// avoid re-running GSUB / GPOS every call. The earlier custom
-	// run-walker is no longer needed — the fix landed in runa proper.
-	lines, err := runa.layout_paragraph(text, opts, &rs.cache, context.temp_allocator)
-	if err != .None { return }
-
 	pen_x := x * scale
 	pen_y := y * scale
 
-	for line in lines {
-		for g in line.glyphs {
-			adv := text_runa_glyph_advance(g.font, u16(g.glyph_id), g.x_advance)
-			text_runa_emit_glyph(rs, r, g.font, u16(g.glyph_id),
-				adv, g.x_offset, g.y_advance, g.y_offset,
-				px_size, inv, &pen_x, &pen_y, color)
+	// A string drawn before is drawn from its cached glyphs (run_cache)
+	key := Measure_Key{
+		hash  = hash.fnv64a(transmute([]u8)text),
+		len   = len(text),
+		size  = size,
+		font  = font,
+		scale = scale,
+	}
+	run, found := &rs.run_cache[key]
+	if !found {
+		stack := text_runa_stack(rs, f)
+		opts := runa.Paragraph_Opts{fonts = stack, size = px_size}
+
+		// `runa.layout_paragraph` threads the cache through to
+		// `shape_text_cached` when a non-nil ^Cache is passed (runa 0.2+),
+		// so the first layout of a string that was shaped before skips GSUB /
+		// GPOS. The laid-out glyphs are then kept in run_cache.
+		lines, err := runa.layout_paragraph(text, opts, &rs.cache, context.temp_allocator)
+		if err != .None { return }
+		count := 0
+		for line in lines { count += len(line.glyphs) }
+		glyphs := make([]Runa_Run_Glyph, count)
+		i := 0
+		for line in lines {
+			for g in line.glyphs {
+				glyphs[i] = Runa_Run_Glyph{
+					font      = g.font,
+					gid       = u16(g.glyph_id),
+					x_advance = text_runa_glyph_advance(g.font, u16(g.glyph_id), g.x_advance),
+					y_advance = g.y_advance,
+					x_offset  = g.x_offset,
+					y_offset  = g.y_offset,
+				}
+				i += 1
+			}
 		}
+		rs.run_cache[key] = Runa_Run{glyphs = glyphs}
+		run = &rs.run_cache[key]
+	}
+	run.used = r.text.measure_frame
+
+	for g in run.glyphs {
+		text_runa_emit_glyph(rs, r, g.font, g.gid,
+			g.x_advance, g.x_offset, g.y_advance, g.y_offset,
+			px_size, inv, &pen_x, &pen_y, color)
 	}
 }
 

@@ -6,8 +6,80 @@ bug fixes bump the patch.
 
 ## Unreleased
 
+### Performance
+
+- **Text measurements are cached across frames** (`Text.measure_cache`):
+  `measure_text` keys on the text's content (a hash and its length, since
+  views rebuild their strings every frame), size, font and DPI scale, so a
+  label measured every frame is a lookup instead of a paragraph layout.
+  Entries unused for 240 frames are dropped; loading a font or chaining a
+  fallback clears it. Test: `measure_cache_hits_by_content`.
+- **Drawn text keeps its laid-out glyphs across frames** (`Text_Runa.run_cache`,
+  keyed like the measurements): `draw_text` redraws a label from its cached
+  glyphs instead of laying the paragraph out again (bidi, line breaking, the
+  padded advances); swept and cleared with the measurement cache. In the
+  Crossfire Editor's harness `draw_text` went from 3.2 to 1.2 µs a call (the
+  inspector's frame 15.4 -> 11.2 ms mean). Test: `draw_cache_draws_the_same_glyphs`.
+- **A stack lays its children out from the sizes measuring it found**
+  (`Stack_Size_Entry.child_sizes` in `Renderer.stack_size_cache`): when a
+  parent's layout measured a stack this frame, `stack_render` takes each
+  child's size from there instead of measuring it again, so a label is
+  measured about once a frame instead of three times. In the Crossfire
+  Editor's harness (CPU clock, ABBA) `measure_text` calls fell a third and
+  the frame 11-18% across its seven scenarios (median pairs 0.82-0.89).
+  Test: `stacks_lay_out_alike_from_kept_sizes`.
+- **Wrapped text keeps its lines across frames** (`Text.wrap_cache`, keyed
+  like the measurements plus the wrap width): each line is kept as a byte
+  range of the text, so `wrap_text` on the same content (a new string every
+  frame) slices it again instead of wrapping. Texts with tabs aren't kept.
+  Swept and cleared with the measurement cache. In the Crossfire Editor's
+  inspector `wrap_text` went from 3.3 to 1.0 µs a call (0.65 -> 0.19 ms a
+  frame). Test: `wrap_cache_hits_by_content`.
+- **Stacks are measured once a frame** (`Renderer.stack_size_cache`):
+  `view_size` of a stack is kept for the rest of the frame (keyed by its
+  children slice and its sizing fields), so a stack nested n deep isn't
+  measured n times, nor its text.
+- **Rows outside a scroll's view aren't drawn** (`stack_render`): a stack's
+  child wholly outside the active clip (plus `CULL_MARGIN`, 32 px) is laid out
+  with drawing suppressed (`Renderer.draw_suppressed`: every draw call returns
+  at once), so a long list puts only what's in view into the batch. It is
+  still laid out, so its widgets keep their rects for scroll-into-view and
+  reveal code. In the Crossfire Editor's harness (CPU clock, ABBA against the
+  build before it) the mean frame dropped 5-17% across its seven scenarios
+  (the console 6.2 -> 5.2 ms, the code editor 5.9 -> 5.1, the inspector
+  9.0 -> 8.2). Test: `culled_rows_draw_nothing_but_keep_their_rects`.
+- `00_gallery`, headless on an Intel UHD 620 laptop: a frame's work 14.5 ->
+  1.7 ms with the three caches (`measure_text` 2970 -> 519 calls a frame).
+- Measured in the Crossfire Editor (its Spall profiling harness, every frame
+  drawn, 1680x1000): mean frame time 27-70% lower across its seven scenarios
+  (at rest on a scene 18.7 -> 9.7 ms, scrolling the inspector 21.2 -> 15.5,
+  the Level mode 14.6 -> 4.4); `measure_text` 3.7 -> 0.8 ms a frame at rest,
+  1383 -> 919 calls a frame.
+
 ### Added
 
+- **`widget_drawn_last_frame(ws, st)`** and `Widget_State.last_drawn_frame`:
+  whether a widget was laid out (its rect recorded) last frame, not only
+  built (rows culled outside a scroll count: they are laid out, not drawn).
+  Hit tests use it: a widget built but not laid out (a closed dialog's
+  content, a branch skipped) no longer takes clicks at its old rect.
+
+- **Profiling with Spall: `-define:SPALL=true`.** `prof_scope("name")` (and
+  `prof_begin` / `prof_end`) record spans into a `.spall` trace
+  (https://gravitymoth.com/spall/); without the define they compile to nothing.
+  `skald.run` starts a trace when none runs (`SPALL_TRACE` names the file,
+  default `trace.spall`) and stops it when the loop ends; the frame loop's
+  spans are `frame` (`frame_begin`, `view`, `render_view`, `render_overlays`,
+  `frame_end`, `update`), `events`, `idle` and `pace`, and text has
+  `measure_text`, `draw_text`, `wrap_text`. Each thread records into its own
+  buffer (`cmd_thread` workers write theirs before the pool counts them done);
+  another library joins the trace by calling `prof_begin` / `prof_end`.
+  `SPALL_CLOCK=cpu` stamps events with each thread's CPU time instead of wall
+  time (`prof_now`: POSIX's thread CPU clock, wall time on Windows), which
+  leaves out time the thread was descheduled, so CPU work compares on a busy
+  machine. `-define:SPALL_AUTO=true` also records every procedure through
+  Odin's instrumentation hooks. See docs/benchmarks.md, "Profiling with
+  Spall".
 - **Choosing several files: `cmd_open_file_dialog(..., allow_many = true)`.**
   Every file chosen arrives in `File_Dialog_Result.paths` (the handler frees
   the slice and its strings; `path` is the first of them). Without it nothing

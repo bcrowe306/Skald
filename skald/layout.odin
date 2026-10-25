@@ -134,10 +134,23 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 		// regardless of what fill-axis sentinels its children use.
 		if vv.width > 0 && vv.height > 0 { return {vv.width, vv.height} }
 
+		// Measured once a frame (Renderer.stack_size_cache), only between
+		// frame_begin and frame_end: the map is in the frame's temp memory,
+		// gone once the frame ends (the same rule as wrap_cache)
+		key: Stack_Size_Key
+		cached := r.frame_valid && len(vv.children) > 0
+		child_sizes: [][2]f32
+		if cached {
+			key = stack_size_key(vv)
+			if entry, found := r.stack_size_cache[key]; found { return entry.size }
+			child_sizes = make([][2]f32, len(vv.children), context.temp_allocator)
+		}
+
 		main:  f32 = 0
 		cross: f32 = 0
 		for child, i in vv.children {
 			cs := view_size(r, child)
+			if cached { child_sizes[i] = cs }
 			axis_main  := vv.direction == .Column ? cs.y : cs.x
 			axis_cross := vv.direction == .Column ? cs.x : cs.y
 
@@ -156,6 +169,7 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 		else                        { out_x, out_y = main, cross }
 		if vv.width  > 0 { out_x = vv.width  }
 		if vv.height > 0 { out_y = vv.height }
+		if cached { r.stack_size_cache[key] = Stack_Size_Entry{{out_x, out_y}, child_sizes} }
 		return {out_x, out_y}
 
 	case View_Wrap_Row:
@@ -2076,6 +2090,21 @@ wrap_row_render :: proc(r: ^Renderer, w: View_Wrap_Row, origin: [2]f32, size: [2
 }
 
 @(private)
+// CULL_MARGIN is how far outside the active clip a child may lie and still be drawn (its
+// shadow or focus ring may reach in).
+CULL_MARGIN :: f32(32)
+
+// child_culled says whether a child's rect lies wholly outside the active clip (by more than
+// CULL_MARGIN), so rendering it would draw nothing visible. No clip active: never culled.
+@(private)
+child_culled :: proc(r: ^Renderer, rect: Rect) -> bool {
+	n := len(r.batch.clip_stack)
+	if n == 0 { return false }
+	c := r.batch.clip_stack[n - 1]
+	return rect.y + rect.h < c.y - CULL_MARGIN || rect.y > c.y + c.h + CULL_MARGIN ||
+		rect.x + rect.w < c.x - CULL_MARGIN || rect.x > c.x + c.w + CULL_MARGIN
+}
+
 stack_render :: proc(r: ^Renderer, s: View_Stack, origin: [2]f32, size: [2]f32) {
 	// Soft drop shadow behind the box. Drawn first so the bg fill sits on top,
 	// and `draw_shadow` extends the quad outside the rect — no clip is active
@@ -2113,14 +2142,21 @@ stack_render :: proc(r: ^Renderer, s: View_Stack, origin: [2]f32, size: [2]f32) 
 	// height-for-width so the column reserves enough vertical space.
 	stretching_col := s.direction == .Column && s.cross_align == .Stretch && inner_cross > 0
 
+	// The children's sizes, when the parent's layout measured this stack this
+	// frame (view_size kept them); else each one is measured here
+	known: [][2]f32
+	if r.frame_valid {
+		if entry, found := r.stack_size_cache[stack_size_key(s)]; found { known = entry.child_sizes }
+	}
+
 	for child, i in s.children {
 		#partial switch c in child {
 		case View_Flex:
 			weights[i] = c.weight
 			total_weight += c.weight
-			sizes[i] = view_size(r, c.child^)
+			sizes[i] = known != nil ? known[i] : view_size(r, c.child^)
 		case:
-			cs := view_size(r, child)
+			cs := known != nil ? known[i] : view_size(r, child)
 			sizes[i] = cs
 			if stretching_col {
 				h := view_height_for_width(r, child, inner_cross)
@@ -2226,7 +2262,15 @@ stack_render :: proc(r: ^Renderer, s: View_Stack, origin: [2]f32, size: [2]f32) 
 		if s.direction == .Column { child_origin.x += cross_offset }
 		else                      { child_origin.y += cross_offset }
 
+		// Culling: a child wholly outside the active clip (a row scrolled out of its scroll's
+		// viewport) would draw nothing anyone sees, so it's laid out with drawing suppressed
+		// (`Renderer.draw_suppressed`): its widgets still get their rects (scrolling to the focused
+		// field, revealing a tab, hit tests' clip checks all read them), but no rects, glyphs or
+		// images reach the batch. CULL_MARGIN keeps children whose shadows or focus rings reach in.
+		culled := child_culled(r, Rect{child_origin.x, child_origin.y, sizes[i].x, sizes[i].y})
+		if culled { r.draw_suppressed += 1 }
 		render_view(r, child, child_origin, sizes[i])
+		if culled { r.draw_suppressed -= 1 }
 
 		step := s.direction == .Column ? sizes[i].y : sizes[i].x
 		if s.direction == .Column { cursor.y += step } else { cursor.x += step }

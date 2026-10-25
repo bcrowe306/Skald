@@ -100,6 +100,7 @@ tm_setup :: proc(f: ^TM_Fixture) -> bool {
 @(private = "file")
 tm_teardown :: proc(f: ^TM_Fixture) {
 	if f.r.text.runa_state != nil { text_runa_free(f.r.text.runa_state) }
+	delete(f.r.text.measure_cache)
 	batch_destroy(&f.r.batch)
 	delete(f.r.overlays)
 	free(f.r.cur)

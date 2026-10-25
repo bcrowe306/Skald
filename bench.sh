@@ -5,6 +5,9 @@
 #   ./bench.sh                # all examples, 600 frames, uncapped
 #   FRAMES=3000 ./bench.sh    # override frame count
 #   ONLY=00_gallery ./bench.sh   # bench a single example
+#   SPALL=1 ./bench.sh        # also a Spall trace per example: build/traces/<example>.spall
+#                             # (built with -define:SPALL=true: docs/benchmarks.md)
+#   HEADLESS=1 ./bench.sh     # no windows: SDL's offscreen video driver, dummy audio
 #
 # Used to sanity-check perf before merging a framework change: run
 # once before, once after, eyeball the table. For reference numbers
@@ -15,6 +18,15 @@ cd "$(dirname "$0")"
 
 FRAMES="${FRAMES:-600}"
 ONLY="${ONLY:-}"
+SPALL="${SPALL:-}"
+HEADLESS="${HEADLESS:-}"
+if [[ -n "$SPALL" ]]; then
+    export EXTRA_DEFINES="-define:SPALL=true"
+    mkdir -p build/traces
+fi
+if [[ -n "$HEADLESS" ]]; then
+    export SDL_VIDEO_DRIVER=offscreen SDL_AUDIO_DRIVER=dummy
+fi
 
 # Canonical bench targets. The gallery is the ceiling test (every
 # widget live), the others isolate specific widget code paths so
@@ -40,7 +52,7 @@ run_one() {
     RELEASE=1 ./build.sh "$ex" > /dev/null 2>&1
 
     local stats
-    stats=$(SKALD_BENCH_FRAMES="$FRAMES" SKALD_BENCH_UNCAP=1 \
+    stats=$(SKALD_BENCH_FRAMES="$FRAMES" SKALD_BENCH_UNCAP=1 SPALL_TRACE="build/traces/$ex.spall" \
         "./build/$ex" 2>/dev/null | grep "SKALD_BENCH_STATS" || true)
 
     if [[ -z "$stats" ]]; then

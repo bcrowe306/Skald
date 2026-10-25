@@ -23,6 +23,7 @@ align_renderer :: proc() -> ^Renderer {
 @(private = "file")
 align_free :: proc(r: ^Renderer) {
 	if r.text.runa_state != nil { text_runa_free(r.text.runa_state) }
+	delete(r.text.measure_cache)
 	batch_destroy(&r.batch)
 	free(r.cur)
 	free(r)

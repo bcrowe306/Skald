@@ -72,6 +72,7 @@ Batch :: struct {
 // Calls are cheap — they append to CPU-side buffers. The actual GPU draw
 // happens once in `frame_end`.
 draw_rect :: proc(r: ^Renderer, rect: Rect, color: Color, radius: f32 = 0) {
+	if r.draw_suppressed > 0 { return }
 	center    := [2]f32{rect.x + rect.w * 0.5, rect.y + rect.h * 0.5}
 	half_size := [2]f32{rect.w * 0.5,          rect.h * 0.5}
 	// Clamp radius so it never exceeds the shorter half-extent — otherwise
@@ -112,6 +113,7 @@ draw_shadow :: proc(
 	color:  Color,
 	offset: [2]f32 = {0, 4},
 ) {
+	if r.draw_suppressed > 0 { return }
 	if blur <= 0 { return }
 	// Offset the shadow source rect — positive y pushes the shadow down,
 	// matching light-from-above convention.
@@ -164,6 +166,7 @@ draw_gradient_rect :: proc(
 	c_tl, c_tr, c_br, c_bl: Color,
 	radius: f32 = 0,
 ) {
+	if r.draw_suppressed > 0 { return }
 	center    := [2]f32{rect.x + rect.w * 0.5, rect.y + rect.h * 0.5}
 	half_size := [2]f32{rect.w * 0.5,          rect.h * 0.5}
 	rr := min(radius, min(half_size.x, half_size.y))
@@ -191,6 +194,7 @@ draw_gradient_rect :: proc(
 // takes the atlas-sampling branch.
 @(private)
 batch_push_glyph :: proc(r: ^Renderer, x0, y0, x1, y1, s0, t0, s1, t1: f32, color: Color) {
+	if r.draw_suppressed > 0 { return }
 	col := color
 	col[3] *= r.alpha_multiplier
 	base := u32(len(r.batch.vertices))
@@ -216,6 +220,7 @@ batch_push_glyph :: proc(r: ^Renderer, x0, y0, x1, y1, s0, t0, s1, t1: f32, colo
 // but emits kind=1 (R8 atlas with tint = colour) instead of kind=2.
 @(private)
 batch_push_glyph_paged :: proc(r: ^Renderer, bind_group: vk.DescriptorSet, x0, y0, x1, y1, s0, t0, s1, t1: f32, color: Color) {
+	if r.draw_suppressed > 0 { return }
 	current_clip: Rect
 	if len(r.batch.clip_stack) > 0 {
 		current_clip = r.batch.clip_stack[len(r.batch.clip_stack) - 1]
@@ -279,6 +284,7 @@ batch_push_image :: proc(
 	tint:       Color,
 	radius:     f32 = 0,
 ) {
+	if r.draw_suppressed > 0 { return }
 	// Current clip intersection. Mirrors clip_open_range's behavior so the
 	// image honors any active push_clip without us tracking clip state here.
 	current_clip: Rect
@@ -344,6 +350,7 @@ batch_push_image :: proc(
 // custom-brush code that wants to emit geometry directly. Prefer the
 // higher-level helper unless you need bespoke tessellation.
 draw_triangles :: proc(r: ^Renderer, verts: [][2]f32, color: Color) {
+	if r.draw_suppressed > 0 { return }
 	n := len(verts)
 	if n < 3 { return }
 
@@ -370,6 +377,7 @@ draw_triangles :: proc(r: ^Renderer, verts: [][2]f32, color: Color) {
 // free, but for arbitrary (rotated) polylines / arcs the SDF box can't express.
 // `verts` and `cols` are parallel; length must be a multiple of 3.
 draw_tris_vc :: proc(r: ^Renderer, verts: [][2]f32, cols: [][4]f32) {
+	if r.draw_suppressed > 0 { return }
 	n := min(len(verts), len(cols))
 	if n < 3 { return }
 	base := u32(len(r.batch.vertices))
@@ -394,6 +402,7 @@ draw_tris_vc :: proc(r: ^Renderer, verts: [][2]f32, cols: [][4]f32) {
 // alternating — and passes it here. For strokes, `draw_stroke` does
 // the ribbon math for you.
 draw_triangle_strip :: proc(r: ^Renderer, verts: [][2]f32, color: Color) {
+	if r.draw_suppressed > 0 { return }
 	n := len(verts)
 	if n < 3 { return }
 
@@ -436,6 +445,7 @@ Stroke_Sample :: struct {
 // segment. Allocates on `context.temp_allocator`.
 draw_stroke :: proc(r: ^Renderer, samples: []Stroke_Sample,
                     base_width: f32, color: Color, aa: bool = false) {
+	if r.draw_suppressed > 0 { return }
 	n := len(samples)
 	if n < 2 || base_width <= 0 { return }
 

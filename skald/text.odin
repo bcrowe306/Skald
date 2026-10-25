@@ -1,6 +1,7 @@
 package skald
 
 import "core:fmt"
+import "core:hash"
 import "core:strings"
 import "core:unicode/utf8"
 import fs "vendor:fontstash"
@@ -95,10 +96,113 @@ Text :: struct {
 	// 1.4 MB Twemoji bytes or appending duplicate font entries.
 	default_emoji_font:        Font,
 	default_emoji_font_loaded: bool,
+
+	// measure_cache keeps `measure_text`'s results across frames, keyed by
+	// the text's content (not its pointer: views rebuild their strings every
+	// frame), size, font and DPI scale. Most labels never change, so most
+	// measurements become a lookup instead of a paragraph layout. Entries
+	// unused for MEASURE_CACHE_KEEP_FRAMES frames are dropped
+	// (`text_measure_cache_tick`, from frame_begin); loading a font or
+	// chaining a fallback clears it (a measurement depends on the stack).
+	measure_cache: map[Measure_Key]Measure_Entry,
+	// wrap_cache keeps `wrap_text`'s lines across frames, keyed like
+	// measure_cache plus the wrap width: each line as a byte range of the
+	// text, so a hit slices the caller's string again. Swept and cleared with
+	// measure_cache. Texts with tabs aren't kept (their lines are new strings)
+	wrap_cache: map[Wrap_Text_Key]Wrap_Entry,
+	// Frames counted by text_measure_cache_tick (an entry's age)
+	measure_frame: u64,
+}
+
+// Wrap_Text_Key identifies a wrap across frames: the text by content, the
+// width it's wrapped to and what changes its measurements
+@(private)
+Wrap_Text_Key :: struct {
+	measure:   Measure_Key,
+	max_width: f32,
+}
+
+// A cached wrap: each line's byte range in the text, and the frame it was
+// last used in
+@(private)
+Wrap_Entry :: struct {
+	lines: [][2]i32,
+	used:  u64,
+}
+
+// Measure_Key identifies a measurement: the text by a hash of its bytes and
+// its length, and the arguments that change the result.
+@(private)
+Measure_Key :: struct {
+	hash:  u64,
+	len:   int,
+	size:  f32,
+	font:  Font,
+	scale: f32,
+}
+
+// A cached measurement and the frame it was last used in
+@(private)
+Measure_Entry :: struct {
+	width, height: f32,
+	used:          u64,
+}
+
+// MEASURE_CACHE_KEEP_FRAMES is how long an unused measurement is kept; the
+// cache is swept that often too.
+MEASURE_CACHE_KEEP_FRAMES :: 240
+
+// MEASURE_CACHE_MAX bounds the cache: past it, a sweep clears it whole
+// (an app measuring that much distinct text a few seconds apart, like a
+// scrolling log, gains nothing from keeping it).
+MEASURE_CACHE_MAX :: 65536
+
+// text_measure_cache_tick counts a frame and, every
+// MEASURE_CACHE_KEEP_FRAMES, drops what wasn't used since the last sweep.
+@(private)
+text_measure_cache_tick :: proc(t: ^Text) {
+	t.measure_frame += 1
+	if t.measure_frame % MEASURE_CACHE_KEEP_FRAMES != 0 { return }
+	if len(t.measure_cache) > MEASURE_CACHE_MAX {
+		clear(&t.measure_cache)
+		text_runa_run_cache_clear(t.runa_state)
+		text_wrap_cache_clear(t)
+		return
+	}
+	stale := make([dynamic]Measure_Key, context.temp_allocator)
+	for key, entry in t.measure_cache {
+		if t.measure_frame - entry.used >= MEASURE_CACHE_KEEP_FRAMES { append(&stale, key) }
+	}
+	for key in stale { delete_key(&t.measure_cache, key) }
+	if len(t.wrap_cache) > MEASURE_CACHE_MAX {
+		text_wrap_cache_clear(t)
+	} else {
+		stale_wraps := make([dynamic]Wrap_Text_Key, context.temp_allocator)
+		for key, entry in t.wrap_cache {
+			if t.measure_frame - entry.used >= MEASURE_CACHE_KEEP_FRAMES { append(&stale_wraps, key) }
+		}
+		for key in stale_wraps {
+			delete(t.wrap_cache[key].lines)
+			delete_key(&t.wrap_cache, key)
+		}
+	}
+	text_runa_run_cache_sweep(t.runa_state, t.measure_frame, MEASURE_CACHE_KEEP_FRAMES, MEASURE_CACHE_MAX)
+}
+
+// text_wrap_cache_clear drops every cached wrap (a font loaded or chained
+// changes them all)
+@(private)
+text_wrap_cache_clear :: proc(t: ^Text) {
+	for _, entry in t.wrap_cache { delete(entry.lines) }
+	clear(&t.wrap_cache)
 }
 
 @(private)
 text_init :: proc(t: ^Text, r: ^Renderer) -> (ok: bool) {
+	// The measurement cache outlives frames: the heap, not the frame arena
+	t.measure_cache = make(map[Measure_Key]Measure_Entry, context.allocator)
+	// (a capacity: wrap_text checks the map is set up, and an empty map without one is nil)
+	t.wrap_cache = make(map[Wrap_Text_Key]Wrap_Entry, 256, context.allocator)
 	fs.Init(&t.fs, ATLAS_SIZE, ATLAS_SIZE, .TOPLEFT)
 	t.fs.userData       = t
 	t.fs.callbackResize = text_on_resize
@@ -173,6 +277,11 @@ text_destroy :: proc(t: ^Text, r: ^Renderer) {
 	}
 	text_destroy_gpu_image(t, r)
 	fs.Destroy(&t.fs)
+	delete(t.measure_cache)
+	t.measure_cache = nil
+	text_wrap_cache_clear(t)
+	delete(t.wrap_cache)
+	t.wrap_cache = nil
 }
 
 @(private)
@@ -395,6 +504,9 @@ font_bold_italic :: proc(r: ^Renderer) -> Font {
 // font_load registers a TTF/OTF font from memory. The bytes are borrowed —
 // callers must keep the slice alive for the lifetime of the renderer.
 font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
+	clear(&r.text.measure_cache)
+	text_runa_run_cache_clear(r.text.runa_state)
+	text_wrap_cache_clear(&r.text)
 	if r.text.runa_state != nil {
 		return font_load_runa(r, name, data)
 	}
@@ -417,6 +529,9 @@ font_load :: proc(r: ^Renderer, name: string, data: []byte) -> Font {
 // Skald ships only with Inter (Latin + Cyrillic); apps targeting
 // other scripts bundle the TTFs they need and register them here.
 font_add_fallback :: proc(r: ^Renderer, base, fallback: Font) -> bool {
+	clear(&r.text.measure_cache)
+	text_runa_run_cache_clear(r.text.runa_state)
+	text_wrap_cache_clear(&r.text)
 	if r.text.runa_state != nil {
 		return font_add_fallback_runa(r, base, fallback)
 	}
@@ -478,6 +593,8 @@ draw_text :: proc(
 	size:  f32 = 14,
 	font:  Font = 0,
 ) {
+	if r.draw_suppressed > 0 { return }
+	prof_scope("draw_text")
 	// Expand tabs so the editable text_input (which shapes its raw buffer)
 	// draws `\t` as whitespace, not missing-glyph tofu. No-ops if tab-free.
 	text := expand_tabs(text)
@@ -527,17 +644,38 @@ text_ascent :: proc(r: ^Renderer, size: f32, font: Font = 0) -> f32 {
 
 // measure_text returns the advance width and line height of the string at
 // the given size. Useful for layout code that needs to size a label before
-// rendering.
+// rendering. Results are cached across frames (`Text.measure_cache`), so
+// measuring the same label every frame costs a hash of its bytes.
 measure_text :: proc(
 	r:    ^Renderer,
 	text: string,
 	size: f32 = 14,
 	font: Font = 0,
 ) -> (width, line_height: f32) {
+	prof_scope("measure_text")
 	// Expand tabs so a `\t` measures as TAB_WIDTH spaces (matching draw_text /
 	// text_line_advances) — keeps text_input's caret, selection, and offset
 	// accessors aligned with the drawn glyphs. No-ops if tab-free.
 	text := expand_tabs(text)
+	key := Measure_Key{
+		hash  = hash.fnv64a(transmute([]u8)text),
+		len   = len(text),
+		size  = size,
+		font  = font,
+		scale = r.scale,
+	}
+	if entry, found := &r.text.measure_cache[key]; found {
+		entry.used = r.text.measure_frame
+		return entry.width, entry.height
+	}
+	width, line_height = measure_text_uncached(r, text, size, font)
+	r.text.measure_cache[key] = Measure_Entry{width, line_height, r.text.measure_frame}
+	return
+}
+
+// The measurement itself, by the active backend (tabs already expanded)
+@(private)
+measure_text_uncached :: proc(r: ^Renderer, text: string, size: f32, font: Font) -> (width, line_height: f32) {
 	if r.text.runa_state != nil {
 		return measure_text_runa(r, text, size, font)
 	}
@@ -947,6 +1085,7 @@ wrap_text :: proc(
 	size:      f32  = 14,
 	font:      Font = 0,
 ) -> []string {
+	prof_scope("wrap_text")
 	if max_width <= 0 {
 		// No-wrap mode: just split on line breaks and return.
 		return split_lines(text)
@@ -978,6 +1117,29 @@ wrap_text :: proc(
 			font      = f,
 		}
 		if cached, ok := r.wrap_cache[key]; ok { return cached }
+	}
+	// Across frames: by content (the string is usually new each frame).
+	// Tab-free text only: its lines are slices of it, kept as byte ranges
+	keep := r != nil && r.text.wrap_cache != nil && strings.index_byte(text, '\t') < 0
+	keep_key: Wrap_Text_Key
+	if keep {
+		keep_key = Wrap_Text_Key{
+			measure = Measure_Key{
+				hash  = hash.fnv64a(transmute([]u8)text),
+				len   = len(text),
+				size  = size,
+				font  = f,
+				scale = r.scale,
+			},
+			max_width = max_width,
+		}
+		if entry, found := &r.text.wrap_cache[keep_key]; found {
+			entry.used = r.text.measure_frame
+			out := make([]string, len(entry.lines), context.temp_allocator)
+			for span, i in entry.lines { out[i] = text[span[0]:span[1]] }
+			if use_cache { r.wrap_cache[key] = out }
+			return out
+		}
 	}
 	// Widths are compared in logical px. measure_text and text_line_advances
 	// both divide by scale and dispatch through the active backend, so the
@@ -1055,7 +1217,27 @@ wrap_text :: proc(
 	}
 	out := lines[:]
 	if use_cache { r.wrap_cache[key] = out }
+	if keep { wrap_cache_keep(r, keep_key, text, out) }
 	return out
+}
+
+// wrap_cache_keep stores a wrap's lines as byte ranges of `text` in
+// Text.wrap_cache (nothing when a line isn't a slice of it)
+@(private)
+wrap_cache_keep :: proc(r: ^Renderer, key: Wrap_Text_Key, text: string, lines: []string) {
+	base := uintptr(raw_data(text))
+	spans := make([][2]i32, len(lines), context.allocator)
+	for line, i in lines {
+		if len(line) == 0 { continue }
+		at := uintptr(raw_data(line))
+		if at < base || at + uintptr(len(line)) > base + uintptr(len(text)) {
+			delete(spans)
+			return
+		}
+		start := i32(at - base)
+		spans[i] = {start, start + i32(len(line))}
+	}
+	r.text.wrap_cache[key] = Wrap_Entry{spans, r.text.measure_frame}
 }
 
 // Rich_Segment is one styled run inside a single visual line of a

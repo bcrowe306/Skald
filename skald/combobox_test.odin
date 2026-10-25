@@ -52,6 +52,7 @@ cb_renderer :: proc(fb: [2]u32) -> ^Renderer {
 cb_renderer_free :: proc(r: ^Renderer) {
 	if r == nil { return }
 	if r.text.runa_state != nil { text_runa_free(r.text.runa_state) }
+	delete(r.text.measure_cache)
 	batch_destroy(&r.batch)
 	free(r.cur)
 	free(r)

@@ -742,6 +742,8 @@ draw_image :: proc(
 	if r == nil { return false }
 	entry := image_cache_get(r, name)
 	if entry == nil { return false }
+	// Culled (stack_render): registered, drawn nowhere
+	if r.draw_suppressed > 0 { return true }
 	pos, uv := image_fit_rects(rect, f32(entry.width), f32(entry.height), fit)
 	push_clip(r, rect)
 	batch_push_image(r, entry.dset, pos, uv, tint)
@@ -768,6 +770,8 @@ draw_image_region :: proc(
 	if r == nil { return false }
 	entry := image_cache_get(r, name)
 	if entry == nil { return false }
+	// Culled (stack_render): registered, drawn nowhere
+	if r.draw_suppressed > 0 { return true }
 	batch_push_image(r, entry.dset, rect, image_region_uv(f32(entry.width), f32(entry.height), src, inset), tint)
 	return true
 }

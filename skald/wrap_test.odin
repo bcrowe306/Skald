@@ -76,6 +76,7 @@ runa_renderer :: proc() -> ^Renderer {
 @(private = "file")
 free_runa_renderer :: proc(r: ^Renderer) {
 	if r.text.runa_state != nil { text_runa_free(r.text.runa_state) }
+	delete(r.text.measure_cache)
 	free(r.cur)
 	free(r)
 }
@@ -95,6 +96,7 @@ fontstash_renderer :: proc() -> ^Renderer {
 @(private = "file")
 free_fontstash_renderer :: proc(r: ^Renderer) {
 	fs.Destroy(&r.text.fs)
+	delete(r.text.measure_cache)
 	free(r.cur)
 	free(r)
 }
