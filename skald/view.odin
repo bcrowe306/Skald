@@ -4528,6 +4528,9 @@ _text_input_impl :: proc(
 		// `on_submit` if the caller opted in; otherwise Enter is left
 		// untouched so a form's primary button can still act on it.
 		if multiline && .Enter in keys && !ctrl {
+			// The line break is this field's: a dialog's Enter-to-confirm
+			// (dialog's `on_confirm`) mustn't also see it
+			ctx.input.keys_pressed -= {.Enter}
 			had_selection := has_selection(anchor, cursor)
 			new_value, cursor = drop_selection(new_value, anchor, cursor)
 			over_cap := max_chars > 0 &&
@@ -10339,6 +10342,7 @@ dialog :: proc(
 	bg:            Color  = {},
 	border:        Color  = {},
 	scrim:         Color  = {},
+	on_confirm:    proc() -> Msg = nil,
 ) -> View {
 	th := ctx.theme
 
@@ -10371,6 +10375,32 @@ dialog :: proc(
 	// losing typed input is worse than forcing an explicit Cancel.
 	if .Escape in ctx.input.keys_pressed {
 		send(ctx, on_dismiss())
+	}
+
+	// Enter confirms (`on_confirm`, the dialog's primary button) unless the
+	// focused widget acts on Enter itself: a button, check, toggle, select or
+	// list fires or opens, a multi-line field takes a line break (and
+	// consumes it), a field with `on_submit` consumed it. The content was
+	// built before this call, so what it consumed is gone from the keys.
+	if on_confirm != nil && st.open && .Enter in ctx.input.keys_pressed && ctx.input.modifiers == {} {
+		takes := false
+		// Only a widget in the card counts: focus left on the button that
+		// opened the dialog (outside it) doesn't take this Enter
+		mr := ctx.widgets.modal_rect_prev
+		f, ok := ctx.widgets.states[ctx.widgets.focused_id]
+		inside := ok && ctx.widgets.focused_id != 0 &&
+			(mr.w <= 0 || rect_contains_point(mr, {f.last_rect.x + f.last_rect.w / 2, f.last_rect.y + f.last_rect.h / 2}))
+		if inside {
+			#partial switch f.kind {
+			case .Button, .Checkbox, .Radio, .Toggle, .Select, .Link, .Tree, .Combobox,
+			     .Date_Picker, .Time_Picker, .Color_Picker, .Emoji_Picker, .Menu_Bar, .Command_Palette:
+				takes = true
+			}
+		}
+		if !takes {
+			send(ctx, on_confirm())
+			ctx.input.keys_pressed -= {.Enter}
+		}
 	}
 
 	// Closed→open transition: snapshot whatever currently holds focus

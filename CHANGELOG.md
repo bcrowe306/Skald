@@ -8,6 +8,27 @@ bug fixes bump the patch.
 
 ### Added
 
+- **Focus rings follow the keyboard** (`:focus-visible`): buttons,
+  checkboxes, radios, toggles and selects draw their ring only after Tab or
+  Shift+Tab moved focus (`Widget_Store.focus_visible`), and a mouse press
+  hides it again, so a clicked button keeps no ring. `focus_visible(ctx)`
+  tells custom widgets. Text fields show focus either way.
+- **`dialog(..., on_confirm = ...)`**: Enter confirms a dialog (its primary
+  button) unless the focused widget acts on Enter itself (a button, check,
+  toggle, select, list, picker, a multi-line field, a field with
+  `on_submit`). A multi-line `text_input` now consumes the Enter it turns
+  into a line break. Tests: `focus_ring_shows_after_tab_and_hides_after_a_press`,
+  `dialog_enter_confirms_unless_the_focus_takes_it`.
+- **A dialog's Tab trap counts only what the dialog drew** (its card is an
+  overlay): a widget behind the scrim whose rect lies under the card was a
+  stop. Test: `dialog_tab_skips_widgets_behind_the_card`.
+
+### Changed
+
+- **The dark theme meets WCAG's 4.5:1 for text:** `primary` is #2b6ee8
+  (white on it 4.67:1; #3b82f6 was 3.68:1) and `danger` #f06a6e (4.5:1 or
+  more on bg, surface and elevated).
+
 - **The built-in widgets set the pointer.** A hand over buttons (tabs are
   buttons), links, checkboxes, radios, toggles, sliders, selects, date /
   time / color triggers, collapsible and accordion headers, `clickable`

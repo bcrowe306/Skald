@@ -492,6 +492,12 @@ Widget_Store :: struct {
 	// "I pressed Ctrl+K, searched, hit Esc, kept typing where I was"
 	// as seamless as a native app.
 	focus_return_id:   Widget_ID,
+	// focus_visible says the keyboard moved focus last (Tab / Shift+Tab), so
+	// the focus ring shows; a mouse press hides it again. Buttons, checkboxes,
+	// radios, toggles and selects draw their ring only then (CSS's
+	// :focus-visible): a clicked button doesn't keep a ring, a tabbed-to one
+	// does. Text fields show their focus either way (the caret).
+	focus_visible:     bool,
 	wants_text_input:  bool,
 	// wants_cursor is what shape the OS pointer should be wearing this
 	// frame. Reset to .Default at the top of each frame; widgets that
@@ -884,6 +890,8 @@ widget_store_begin_frame :: proc(ws: ^Widget_Store, input: Input) {
 // contain last frame's top-layer geometry and `Widget_State.last_rect`
 // still describes the focused widget's hit region.
 widget_store_blur_on_outside_press :: proc(ws: ^Widget_Store, input: Input) {
+	// Any press hides the keyboard's focus ring (focus_visible), inside or out
+	if ws != nil && input.mouse_pressed[.Left] { ws.focus_visible = false }
 	if ws == nil || ws.focused_id == 0 || !input.mouse_pressed[.Left] {
 		return
 	}
@@ -1510,6 +1518,14 @@ widget_make_focusable :: proc(ctx: ^Ctx($Msg), id: Widget_ID, tab_index: int = 0
 	})
 }
 
+// focus_visible reports whether the keyboard moved focus last (Tab or
+// Shift+Tab since the last mouse press): custom widgets draw their focus ring
+// only then, as the built-in buttons, checkboxes, radios, toggles and selects
+// do. Text fields show focus either way.
+focus_visible :: proc(ctx: ^Ctx($Msg)) -> bool {
+	return ctx.widgets != nil && ctx.widgets.focus_visible
+}
+
 // widget_tab_index overrides `id`'s tab_index for the current frame.
 // Apps call this *after* the widget builder returns, when they want
 // to steer the Tab ring — e.g. a form laid out "phone above email"
@@ -1551,6 +1567,7 @@ widget_tab_index :: proc(ctx: ^Ctx($Msg), id: Widget_ID, tab_index: int) {
 widget_advance_focus :: proc(ws: ^Widget_Store, backward: bool) {
 	n := len(ws.focusables)
 	if n == 0 { return }
+	ws.focus_visible = true
 
 	modal_on := ws.modal_rect.w > 0 && ws.modal_rect.h > 0
 
@@ -1569,6 +1586,10 @@ widget_advance_focus :: proc(ws: ^Widget_Store, backward: bool) {
 			if !ok { continue }
 			r := st.last_rect
 			if r.w <= 0 || r.h <= 0 { continue }
+			// Only what the dialog drew (its card is an overlay): a widget
+			// behind the scrim whose rect happens to lie under the card
+			// isn't part of it
+			if st.last_overlay_frame != ws.frame { continue }
 			cx := r.x + r.w / 2
 			cy := r.y + r.h / 2
 			if !rect_contains_point(ws.modal_rect, {cx, cy}) { continue }

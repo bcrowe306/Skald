@@ -702,7 +702,7 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 
 		draw_rect(r, {origin.x, origin.y, size.x, size.y}, bg, vv.radius)
 
-		if vv.focused {
+		if vv.focused && focus_ring_shown(r) {
 			draw_focus_ring(r,
 				{origin.x, origin.y, size.x, size.y},
 				vv.radius, vv.color_focus, bg)
@@ -1061,7 +1061,7 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 			bg = color_tint(bg, 0.06)
 		}
 		draw_rect(r, {box_r.x, box_r.y, box_r.w, box_r.h}, bg, radius)
-		if vv.focused {
+		if vv.focused && focus_ring_shown(r) {
 			draw_focus_ring(r,
 				{box_r.x, box_r.y, box_r.w, box_r.h},
 				radius, vv.color_focus, bg)
@@ -1114,7 +1114,7 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 			bg = color_tint(bg, 0.06)
 		}
 		draw_rect(r, {box_r.x, box_r.y, box_r.w, box_r.h}, bg, radius)
-		if vv.focused {
+		if vv.focused && focus_ring_shown(r) {
 			draw_focus_ring(r,
 				{box_r.x, box_r.y, box_r.w, box_r.h},
 				radius, vv.color_focus, bg)
@@ -1166,7 +1166,7 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 			bg = color_tint(bg, 0.06)
 		}
 		draw_rect(r, {track_x, track_y, vv.track_w, vv.track_h}, bg, radius)
-		if vv.focused {
+		if vv.focused && focus_ring_shown(r) {
 			draw_focus_ring(r,
 				{track_x, track_y, vv.track_w, vv.track_h},
 				radius, vv.color_focus, bg)
@@ -1413,7 +1413,7 @@ render_view :: proc(r: ^Renderer, v: View, origin: [2]f32, size: [2]f32) {
 		if vv.hover { bg = color_tint(bg, 0.08) }
 		draw_rect(r, {origin.x, origin.y, size.x, size.y}, bg, vv.radius)
 
-		if vv.focused || vv.open {
+		if (vv.focused && focus_ring_shown(r)) || vv.open {
 			draw_focus_ring(r,
 				{origin.x, origin.y, size.x, size.y},
 				vv.radius, vv.color_focus, bg)
@@ -1953,6 +1953,14 @@ render_overlays :: proc(r: ^Renderer) {
 		r.alpha_multiplier = saved_alpha
 		i += 1
 	}
+}
+
+// focus_ring_shown says whether keyboard focus rings draw this frame: only
+// after Tab moved focus (Widget_Store.focus_visible), so a clicked button
+// keeps no ring. Without a widget store (offscreen renders) they draw.
+@(private)
+focus_ring_shown :: proc(r: ^Renderer) -> bool {
+	return r.widgets == nil || r.widgets.focus_visible
 }
 
 // draw_focus_ring paints a 2-px accent outline that respects the widget's

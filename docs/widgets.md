@@ -1663,12 +1663,18 @@ dialog(ctx, open: bool, content: View,
        on_dismiss: proc() -> Msg,
        initial_focus: Widget_ID = 0,
        width = 0, max_width = 480, padding = 0,
-       bg = {}, border = {}, scrim = {})
+       bg = {}, border = {}, scrim = {},
+       on_confirm: proc() -> Msg = nil)
 ```
 
 Modal dialog with a full-frame scrim. The scrim swallows clicks but
 **does not dismiss** — Esc and explicit buttons are the only ways
-out. `on_dismiss` fires on Esc.
+out. `on_dismiss` fires on Esc. `on_confirm` (optional) fires on
+Enter — the dialog's primary button — unless the focused widget acts
+on Enter itself (a button, check, toggle, select, list or picker; a
+multi-line field; a field with `on_submit`). Tab and Shift+Tab stay
+inside the card (a focus trap), and focus rings show only after the
+keyboard moved focus (`focus_visible`).
 
 On open the dialog snapshots whatever widget held focus; on close it
 restores that focus. `initial_focus` (when non-zero) seeds focus to

@@ -89,7 +89,7 @@ Theme_Font :: struct {
 theme_dark :: proc() -> Theme {
 	// Values benchmarked against GitHub Primer and Radix Slate scales.
 	// Deeper `bg` (#0f1115) gives `elevated` room to read as actually
-	// elevated without a third tonal bump. True-blue primary (#3b82f6)
+	// elevated without a third tonal bump. True-blue primary (#2b6ee8, darkened from #3b82f6 for contrast)
 	// — neutral system-chrome instead of the old indigo (#4c6ef5)
 	// which trends brand-coded.
 	return Theme{
@@ -100,12 +100,14 @@ theme_dark :: proc() -> Theme {
 			border     = rgb(0x2e323a),
 			fg         = rgb(0xe6edf3),
 			fg_muted   = rgb(0x8b95a3),
-			primary    = rgb(0x3b82f6),
+			// #2b6ee8, not #3b82f6: white text on it reaches WCAG's 4.5:1 (4.67; it was 3.68)
+			primary    = rgb(0x2b6ee8),
 			on_primary = rgb(0xffffff),
-			selection  = rgba(0x3b82f659), // primary @ ~0.35 alpha
+			selection  = rgba(0x2b6ee859), // primary @ ~0.35 alpha
 			success    = rgb(0x2ea043),
 			warning    = rgb(0xd29922),
-			danger     = rgb(0xe5484d),
+			// Lighter than #e5484d, so danger text reads at 4.5:1 on every surface (5.2 on elevated)
+			danger     = rgb(0xf06a6e),
 		},
 		radius  = theme_default_radius(),
 		spacing = theme_default_spacing(),
