@@ -139,23 +139,18 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 		// gone once the frame ends (the same rule as wrap_cache)
 		key: Stack_Size_Key
 		cached := r.frame_valid && len(vv.children) > 0
+		child_sizes: [][2]f32
 		if cached {
-			key = Stack_Size_Key{
-				children  = raw_data(vv.children),
-				count     = len(vv.children),
-				direction = vv.direction,
-				spacing   = vv.spacing,
-				padding   = vv.padding,
-				width     = vv.width,
-				height    = vv.height,
-			}
-			if size, found := r.stack_size_cache[key]; found { return size }
+			key = stack_size_key(vv)
+			if entry, found := r.stack_size_cache[key]; found { return entry.size }
+			child_sizes = make([][2]f32, len(vv.children), context.temp_allocator)
 		}
 
 		main:  f32 = 0
 		cross: f32 = 0
 		for child, i in vv.children {
 			cs := view_size(r, child)
+			if cached { child_sizes[i] = cs }
 			axis_main  := vv.direction == .Column ? cs.y : cs.x
 			axis_cross := vv.direction == .Column ? cs.x : cs.y
 
@@ -174,7 +169,7 @@ view_size :: proc(r: ^Renderer, v: View) -> [2]f32 {
 		else                        { out_x, out_y = main, cross }
 		if vv.width  > 0 { out_x = vv.width  }
 		if vv.height > 0 { out_y = vv.height }
-		if cached { r.stack_size_cache[key] = {out_x, out_y} }
+		if cached { r.stack_size_cache[key] = Stack_Size_Entry{{out_x, out_y}, child_sizes} }
 		return {out_x, out_y}
 
 	case View_Wrap_Row:
@@ -2147,14 +2142,21 @@ stack_render :: proc(r: ^Renderer, s: View_Stack, origin: [2]f32, size: [2]f32) 
 	// height-for-width so the column reserves enough vertical space.
 	stretching_col := s.direction == .Column && s.cross_align == .Stretch && inner_cross > 0
 
+	// The children's sizes, when the parent's layout measured this stack this
+	// frame (view_size kept them); else each one is measured here
+	known: [][2]f32
+	if r.frame_valid {
+		if entry, found := r.stack_size_cache[stack_size_key(s)]; found { known = entry.child_sizes }
+	}
+
 	for child, i in s.children {
 		#partial switch c in child {
 		case View_Flex:
 			weights[i] = c.weight
 			total_weight += c.weight
-			sizes[i] = view_size(r, c.child^)
+			sizes[i] = known != nil ? known[i] : view_size(r, c.child^)
 		case:
-			cs := view_size(r, child)
+			cs := known != nil ? known[i] : view_size(r, child)
 			sizes[i] = cs
 			if stretching_col {
 				h := view_height_for_width(r, child, inner_cross)

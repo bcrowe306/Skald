@@ -198,6 +198,28 @@ Stack_Size_Key :: struct {
 	height:    f32,
 }
 
+// Stack_Size_Entry is a stack's measured size and its children's, as
+// `view_size` found them: `stack_render` lays the children out from these
+// instead of measuring each one again (temp memory, this frame only)
+Stack_Size_Entry :: struct {
+	size:        [2]f32,
+	child_sizes: [][2]f32,
+}
+
+// stack_size_key is the stack's key in `Renderer.stack_size_cache`
+@(private)
+stack_size_key :: proc(s: View_Stack) -> Stack_Size_Key {
+	return Stack_Size_Key{
+		children  = raw_data(s.children),
+		count     = len(s.children),
+		direction = s.direction,
+		spacing   = s.spacing,
+		padding   = s.padding,
+		width     = s.width,
+		height    = s.height,
+	}
+}
+
 Renderer :: struct {
 	instance:         vk.Instance,
 	phys_device:      vk.PhysicalDevice,
@@ -226,8 +248,9 @@ Renderer :: struct {
 	// stack_size_cache memoises `view_size` of stacks for the current frame
 	// (temp allocated in frame_begin, like wrap_cache). Every container
 	// measures its children, so without it a stack nested n deep is
-	// measured n times a frame, and its text with it.
-	stack_size_cache: map[Stack_Size_Key][2]f32,
+	// measured n times a frame, and its text with it. Its children's sizes are
+	// kept too, for stack_render.
+	stack_size_cache: map[Stack_Size_Key]Stack_Size_Entry,
 	// draw_suppressed > 0 while a culled child (outside the active clip: stack_render) is laid
 	// out: the draw procedures return at once, so nothing reaches the batch, while layout and
 	// widget rects go on as usual
@@ -513,7 +536,7 @@ frame_begin :: proc(r: ^Renderer, w: ^Window, clear: Color) -> (ok: bool) {
 	r.frame_valid      = true
 	r.overlays         = make([dynamic]Overlay_Entry, context.temp_allocator)
 	r.wrap_cache       = make(map[Wrap_Key][]string, allocator = context.temp_allocator)
-	r.stack_size_cache = make(map[Stack_Size_Key][2]f32, allocator = context.temp_allocator)
+	r.stack_size_cache = make(map[Stack_Size_Key]Stack_Size_Entry, allocator = context.temp_allocator)
 	r.alpha_multiplier = 1
 	text_measure_cache_tick(&r.text)
 

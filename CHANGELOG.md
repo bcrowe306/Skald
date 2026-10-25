@@ -20,6 +20,14 @@ bug fixes bump the patch.
   padded advances); swept and cleared with the measurement cache. In the
   Crossfire Editor's harness `draw_text` went from 3.2 to 1.2 µs a call (the
   inspector's frame 15.4 -> 11.2 ms mean). Test: `draw_cache_draws_the_same_glyphs`.
+- **A stack lays its children out from the sizes measuring it found**
+  (`Stack_Size_Entry.child_sizes` in `Renderer.stack_size_cache`): when a
+  parent's layout measured a stack this frame, `stack_render` takes each
+  child's size from there instead of measuring it again, so a label is
+  measured about once a frame instead of three times. In the Crossfire
+  Editor's harness (CPU clock, ABBA) `measure_text` calls fell a third and
+  the frame 11-18% across its seven scenarios (median pairs 0.82-0.89).
+  Test: `stacks_lay_out_alike_from_kept_sizes`.
 - **Wrapped text keeps its lines across frames** (`Text.wrap_cache`, keyed
   like the measurements plus the wrap width): each line is kept as a byte
   range of the text, so `wrap_text` on the same content (a new string every
