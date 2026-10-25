@@ -54,9 +54,10 @@ cursor_requests_soft_and_top :: proc(t: ^testing.T) {
 	cursor_request_soft(&ctx, .Move)
 	testing.expect_value(t, cursor_current(&ctx), Cursor_Shape.Pointer)
 
-	// The next frame starts over.
+	// The next frame starts over, remembering what the last one showed.
 	ctx = cur_begin(&f)
 	testing.expect_value(t, cursor_current(&ctx), Cursor_Shape.Default)
+	testing.expect_value(t, cursor_shown(&ctx), Cursor_Shape.Pointer)
 	cursor_request(&ctx, .Grab)
 	testing.expect_value(t, cursor_current(&ctx), Cursor_Shape.Grab)
 }

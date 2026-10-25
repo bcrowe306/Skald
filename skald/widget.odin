@@ -505,6 +505,9 @@ Widget_Store :: struct {
 	// drag): later plain requests from widgets built after it, and under
 	// it, leave the shape alone for the rest of the frame.
 	cursor_locked:     bool,
+	// cursor_prev is the shape last frame settled on (what the pointer shows
+	// now): `cursor_shown` reads it, for tests and drivers.
+	cursor_prev:       Cursor_Shape,
 	// pointer_capture_id, when non-zero, is the widget that owns the mouse —
 	// currently a scrollbar being hovered or dragged. While set, widget_hovered
 	// returns false for every OTHER id, so content under the bar (and rows a
@@ -806,6 +809,13 @@ cursor_current :: proc(ctx: ^Ctx($Msg)) -> Cursor_Shape {
 	return ctx.widgets.wants_cursor
 }
 
+// cursor_shown is the shape the last frame settled on: what the pointer
+// shows while this frame is built (the current frame's requests are
+// `cursor_current`). For tests and UI drivers.
+cursor_shown :: proc(ctx: ^Ctx($Msg)) -> Cursor_Shape {
+	return ctx.widgets.cursor_prev
+}
+
 // cursor_for_widget is the built-in widgets' hover cursor: `shape` while
 // the pointer is over widget `id` (z-aware, like `widget_hovered`), or
 // Not_Allowed when the widget is `disabled`. Apps building their own
@@ -819,6 +829,7 @@ widget_store_frame_reset :: proc(ws: ^Widget_Store) {
 	ws.auto_id                = 0
 	ws.auto_id_scope          = 0
 	ws.wants_text_input       = false
+	ws.cursor_prev            = ws.wants_cursor
 	ws.wants_cursor           = .Default
 	ws.cursor_locked          = false
 	ws.next_frame_deadline_ns = 0

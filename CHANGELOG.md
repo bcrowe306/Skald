@@ -24,7 +24,8 @@ bug fixes bump the patch.
   containers built after their children), **`cursor_request_top`** (keeps
   the shape for the rest of the frame: for menus and overlays built before
   what they cover), **`cursor_for_widget(ctx, id, shape, disabled)`** (the
-  widgets' hover rule, for apps' own controls) and **`cursor_current`**.
+  widgets' hover rule, for apps' own controls), **`cursor_current`** and
+  **`cursor_shown`** (what the last frame settled on: for UI drivers).
   Tests: `cursor_requests_soft_and_top`, `cursor_follows_the_built_in_widgets`,
   `cursor_hand_art_is_well_formed`.
 
