@@ -57,6 +57,10 @@ Pipeline :: struct {
 	pipeline:     vk.Pipeline,
 
 	sampler:      vk.Sampler,
+	// sampler_nearest magnifies with nearest filtering (pixel art drawn bigger
+	// stays crisp; minified it's linear with mips, as `sampler`): the images'
+	// `dset_nearest`, made on the first `nearest` draw
+	sampler_nearest: vk.Sampler,
 	dset_pool:    vk.DescriptorPool,
 }
 
@@ -75,6 +79,7 @@ pipeline_destroy :: proc(p: ^Pipeline, r: ^Renderer) {
 	d := r.device
 
 	if p.sampler     != 0 { vk.DestroySampler(d, p.sampler, nil); p.sampler = 0 }
+	if p.sampler_nearest != 0 { vk.DestroySampler(d, p.sampler_nearest, nil); p.sampler_nearest = 0 }
 	if p.dset_pool   != 0 { vk.DestroyDescriptorPool(d, p.dset_pool, nil); p.dset_pool = 0 }
 	if p.dset_layout != 0 { vk.DestroyDescriptorSetLayout(d, p.dset_layout, nil); p.dset_layout = 0 }
 
@@ -352,6 +357,11 @@ pipeline_create_sampler :: proc(p: ^Pipeline, r: ^Renderer) -> bool {
 	}
 	if res := vk.CreateSampler(r.device, &info, nil, &p.sampler); res != .SUCCESS {
 		fmt.eprintfln("skald: CreateSampler: %v", res); return false
+	}
+	// Nearest when magnified, for draws asking for crisp pixels
+	info.magFilter = .NEAREST
+	if res := vk.CreateSampler(r.device, &info, nil, &p.sampler_nearest); res != .SUCCESS {
+		fmt.eprintfln("skald: CreateSampler (nearest): %v", res); return false
 	}
 	return true
 }

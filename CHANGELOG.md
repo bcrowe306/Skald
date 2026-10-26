@@ -8,6 +8,12 @@ bug fixes bump the patch.
 
 ### Added
 
+- **Crisp pixels per draw:** `draw_image` and `draw_image_region` take
+  `nearest = false`; true magnifies with nearest filtering (a second
+  sampler, `Pipeline.sampler_nearest`, and a second descriptor set per image
+  made on the first such draw), so pixel art and tilesets drawn bigger stay
+  sharp. Test: `image_nearest_draws_crisp_pixels`.
+
 - **Focus rings follow the keyboard** (`:focus-visible`): buttons,
   checkboxes, radios, toggles and selects draw their ring only after Tab or
   Shift+Tab moved focus (`Widget_Store.focus_visible`), and a mouse press

@@ -98,6 +98,9 @@ Image_Entry :: struct {
 	mem:       vk.DeviceMemory,
 	view:      vk.ImageView,
 	dset:      vk.DescriptorSet,
+	// dset_nearest = the same view with the nearest sampler, made on the first
+	// draw that asks for it (`image_entry_dset`)
+	dset_nearest: vk.DescriptorSet,
 	width:     u32,
 	height:    u32,
 	mip_count: u32,
@@ -160,12 +163,13 @@ Image_Cache :: struct {
 @(private)
 image_cache_init :: proc(c: ^Image_Cache, r: ^Renderer) -> bool {
 	pool_sizes := [?]vk.DescriptorPoolSize{
-		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = IMAGE_CACHE_MAX_ENTRIES},
+		// Two per image: its own set, and the nearest sampler's (`dset_nearest`)
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = IMAGE_CACHE_MAX_ENTRIES * 2},
 	}
 	pi := vk.DescriptorPoolCreateInfo{
 		sType = .DESCRIPTOR_POOL_CREATE_INFO,
 		flags = {.FREE_DESCRIPTOR_SET},
-		maxSets = IMAGE_CACHE_MAX_ENTRIES,
+		maxSets = IMAGE_CACHE_MAX_ENTRIES * 2,
 		poolSizeCount = u32(len(pool_sizes)), pPoolSizes = raw_data(pool_sizes[:]),
 	}
 	if res := vk.CreateDescriptorPool(r.device, &pi, nil, &c.dset_pool); res != .SUCCESS {
@@ -299,6 +303,7 @@ image_entry_free :: proc(r: ^Renderer, e: ^Image_Entry) {
 	if e == nil { return }
 	image_stream_free(r, &e.stream)
 	if e.dset  != 0 { vk.FreeDescriptorSets(r.device, r.images.dset_pool, 1, &e.dset) }
+	if e.dset_nearest != 0 { vk.FreeDescriptorSets(r.device, r.images.dset_pool, 1, &e.dset_nearest) }
 	if e.view  != 0 { vk.DestroyImageView(r.device, e.view, nil) }
 	if e.image != 0 { vk.DestroyImage(r.device, e.image, nil) }
 	if e.mem   != 0 { vk.FreeMemory(r.device, e.mem, nil) }
@@ -730,6 +735,9 @@ image_stream_free :: proc(r: ^Renderer, st: ^Image_Stream) {
 //   .Cover   scale to fill, crop the overflow via UV trim (default)
 //   .None    native size, centered (clipped to `rect`)
 //
+// `nearest` magnifies with nearest filtering: each image pixel a sharp
+// square at any zoom (pixel art, tilesets); minified it's linear as usual.
+//
 // Returns false if `name` isn't registered (caller can paint a
 // placeholder); true on success.
 draw_image :: proc(
@@ -738,6 +746,7 @@ draw_image :: proc(
 	rect: Rect,
 	fit:  Image_Fit = .Cover,
 	tint: Color     = {1, 1, 1, 1},
+	nearest: bool   = false,
 ) -> bool {
 	if r == nil { return false }
 	entry := image_cache_get(r, name)
@@ -746,7 +755,7 @@ draw_image :: proc(
 	if r.draw_suppressed > 0 { return true }
 	pos, uv := image_fit_rects(rect, f32(entry.width), f32(entry.height), fit)
 	push_clip(r, rect)
-	batch_push_image(r, entry.dset, pos, uv, tint)
+	batch_push_image(r, image_entry_dset(r, entry, nearest), pos, uv, tint)
 	pop_clip(r)
 	return true
 }
@@ -758,7 +767,13 @@ draw_image :: proc(
 // filtering doesn't pull in the neighbouring cell's edge; `inset = false` samples
 // exactly `src` instead (a 1:1 copy of part of a bigger image, such as the used
 // corner of a render target that only grows). `src` is clamped to the image.
-// Returns false if `name` isn't registered.
+// `nearest` magnifies with nearest filtering (crisp pixels at any zoom: a
+// tileset or sprite sheet shown bigger); pass `inset = false` with it, since
+// nearest sampling doesn't bleed. Returns false if `name` isn't registered.
+//
+// Example:
+//	// A 16 px tile drawn 8 times bigger, its pixels sharp
+//	draw_image_region(painter.r, "tiles.png", {x, y, 128, 128}, {32, 0, 16, 16}, inset = false, nearest = true)
 draw_image_region :: proc(
 	r:     ^Renderer,
 	name:  string,
@@ -766,14 +781,44 @@ draw_image_region :: proc(
 	src:   Rect,
 	tint:  Color = {1, 1, 1, 1},
 	inset: bool  = true,
+	nearest: bool = false,
 ) -> bool {
 	if r == nil { return false }
 	entry := image_cache_get(r, name)
 	if entry == nil { return false }
 	// Culled (stack_render): registered, drawn nowhere
 	if r.draw_suppressed > 0 { return true }
-	batch_push_image(r, entry.dset, rect, image_region_uv(f32(entry.width), f32(entry.height), src, inset), tint)
+	batch_push_image(r, image_entry_dset(r, entry, nearest), rect, image_region_uv(f32(entry.width), f32(entry.height), src, inset), tint)
 	return true
+}
+
+// image_entry_dset is the descriptor set a draw binds: the entry's own, or
+// (`nearest`) one with the nearest sampler, made the first time it's asked for.
+// Falls back to the entry's own when it can't be made (or without a device).
+@(private)
+image_entry_dset :: proc(r: ^Renderer, e: ^Image_Entry, nearest: bool) -> vk.DescriptorSet {
+	if !nearest || e.view == 0 || r.device == nil || r.pipeline.sampler_nearest == 0 { return e.dset }
+	if e.dset_nearest != 0 { return e.dset_nearest }
+	layout := r.pipeline.dset_layout
+	ai := vk.DescriptorSetAllocateInfo{
+		sType = .DESCRIPTOR_SET_ALLOCATE_INFO,
+		descriptorPool = r.images.dset_pool,
+		descriptorSetCount = 1, pSetLayouts = &layout,
+	}
+	if res := vk.AllocateDescriptorSets(r.device, &ai, &e.dset_nearest); res != .SUCCESS {
+		e.dset_nearest = 0
+		return e.dset
+	}
+	di := vk.DescriptorImageInfo{
+		sampler = r.pipeline.sampler_nearest, imageView = e.view, imageLayout = .SHADER_READ_ONLY_OPTIMAL,
+	}
+	write := vk.WriteDescriptorSet{
+		sType = .WRITE_DESCRIPTOR_SET, dstSet = e.dset_nearest,
+		dstBinding = 0, descriptorCount = 1, descriptorType = .COMBINED_IMAGE_SAMPLER,
+		pImageInfo = &di,
+	}
+	vk.UpdateDescriptorSets(r.device, 1, &write, 0, nil)
+	return e.dset_nearest
 }
 
 // image_region_uv turns a pixel rect of a `w` x `h` image into `{u0, v0, u1, v1}`

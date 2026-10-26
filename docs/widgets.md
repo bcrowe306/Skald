@@ -643,7 +643,7 @@ the render thread. No-op + `false` on an unknown key.
 
 ```odin
 draw_image(r: ^Renderer, name: string, rect: Rect,
-           fit = .Cover, tint = {1, 1, 1, 1}) -> bool
+           fit = .Cover, tint = {1, 1, 1, 1}, nearest = false) -> bool
 ```
 
 Paints a registered image inside a `canvas` callback at `rect` (logical
@@ -651,13 +651,14 @@ pixels). Use this when you want to composite an image *behind* app-drawn
 overlay primitives (lines, markers, text) in the same canvas node — the
 ordinary `image()` widget can't be interleaved with `draw_*` calls
 because it lives in the view tree, not the immediate-mode canvas
-pass. Same `Image_Fit` semantics as the widget.
+pass. Same `Image_Fit` semantics as the widget. `nearest = true` magnifies
+with nearest filtering (see `draw_image_region`).
 
 #### draw_image_region
 
 ```odin
 draw_image_region(r: ^Renderer, name: string, rect: Rect, src: Rect,
-                  tint = {1, 1, 1, 1}, inset = true) -> bool
+                  tint = {1, 1, 1, 1}, inset = true, nearest = false) -> bool
 ```
 
 Paints part of a registered image — `src`, in the image's own pixels
@@ -668,6 +669,14 @@ doesn't bleed the neighbouring cell in; `src` is clamped to the image.
 `inset = false` samples exactly `src`: a 1:1 copy of part of a bigger
 image, such as the used corner of a render target that only grows
 (`image_create_target`).
+
+`nearest = true` magnifies with nearest filtering instead of linear: each
+image pixel stays a sharp square at any zoom (pixel art, a tileset shown
+bigger for picking). Minified it's linear with mips, as usual. It's per
+draw: the image gets a second descriptor set with a nearest sampler the
+first time a draw asks for it, so the same image can be drawn smooth in
+one place and crisp in another. Use `inset = false` with it (nearest
+sampling doesn't bleed the neighbouring cell).
 
 ```odin
 // Cell 5 of a 4-column sheet of 32x32 cells, as a 64x64 thumbnail
